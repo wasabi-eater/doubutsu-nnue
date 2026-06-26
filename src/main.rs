@@ -284,10 +284,63 @@ fn save_training_data(filename: &str, records: &[PositionRecord], sente_score: f
             -sente_score
         };
 
-        let features_str: Vec<String> = record.features.iter().map(|f| f.to_string()).collect();
-        let features_csv = features_str.join(",");
+        // 1. オリジナル
+        write_record(&mut file, target_score, &record.features);
 
-        writeln!(file, "{},{}", target_score, features_csv).unwrap();
+        // 2. 左右反転
+        let flipped: Vec<usize> = record
+            .features
+            .iter()
+            .map(|&f| flip_horizontal(f))
+            .collect();
+        write_record(&mut file, target_score, &flipped);
+
+        // 3. 180度回転 (手番も反転したとみなせる)
+        let rotated: Vec<usize> = record.features.iter().map(|&f| rotate_180(f)).collect();
+        write_record(&mut file, target_score, &rotated);
+
+        // 4. 180度回転 + 左右反転
+        let flipped_rotated: Vec<usize> = rotated.iter().map(|&f| flip_horizontal(f)).collect();
+        write_record(&mut file, target_score, &flipped_rotated);
+    }
+}
+
+// 1行書き込みヘルパー
+fn write_record(file: &mut std::fs::File, target_score: f32, features: &[usize]) {
+    let features_str: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+    let features_csv = features_str.join(",");
+    writeln!(file, "{},{}", target_score, features_csv).unwrap();
+}
+
+// --- データの水増し (Data Augmentation) 用ヘルパー関数 ---
+fn flip_horizontal(f: usize) -> usize {
+    if f < 120 {
+        let sq = f % 12;
+        let x = sq % 3;
+        let y = sq / 3;
+        let new_sq = y * 3 + (2 - x);
+        f - sq + new_sq
+    } else {
+        f // 持ち駒は左右反転しても変わらない
+    }
+}
+
+fn rotate_180(f: usize) -> usize {
+    if f < 120 {
+        let sq = f % 12;
+        let kind_idx = (f / 12) % 5;
+        let player_idx = f / 60;
+
+        let new_sq = 11 - sq;
+        let new_player_idx = 1 - player_idx; // 先手と後手を入れ替え
+
+        new_player_idx * 60 + kind_idx * 12 + new_sq
+    } else {
+        if f < 126 {
+            f + 6 // 先手の持ち駒 -> 後手の持ち駒
+        } else {
+            f - 6 // 後手の持ち駒 -> 先手の持ち駒
+        }
     }
 }
 
