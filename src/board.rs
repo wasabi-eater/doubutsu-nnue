@@ -151,7 +151,7 @@ impl Board {
         self.occupied_by(Player::Sente) | self.occupied_by(Player::Gote)
     }
 
-    pub fn any_attcker(&self, target_sq: u32, turn: Player) -> bool {
+    pub fn any_attacker(&self, target_sq: u32, turn: Player) -> bool {
         let turn_usize = if turn == Player::Sente { 0 } else { 1 };
         (0..PIECE_TYPE_COUNT / 2).any(|kind_id| {
             let mut bb = if turn == Player::Sente {
@@ -161,7 +161,7 @@ impl Board {
             };
             while bb > 0 {
                 let sq = bb.trailing_zeros() as usize;
-                if ATTACK_TABLE[turn_usize][kind_id][sq] >> target_sq != 0 {
+                if (ATTACK_TABLE[turn_usize][kind_id][sq] & (1 << target_sq)) != 0 {
                     return true;
                 }
                 bb &= bb - 1;
@@ -182,12 +182,12 @@ impl Board {
         }
 
         let sente_lion_sq = self.piece_bbs[sente_lion].trailing_zeros();
-        if sente_lion_sq < 3 && !self.any_attcker(sente_lion_sq, Player::Gote) {
+        if sente_lion_sq < 3 && !self.any_attacker(sente_lion_sq, Player::Gote) {
             return Some(Player::Sente);
         }
 
         let gote_lion_sq = self.piece_bbs[gote_lion].trailing_zeros();
-        if gote_lion_sq >= 12 - 3 && !self.any_attcker(gote_lion_sq, Player::Sente) {
+        if gote_lion_sq >= 12 - 3 && !self.any_attacker(gote_lion_sq, Player::Sente) {
             return Some(Player::Gote);
         }
 
