@@ -198,7 +198,7 @@ fn generate_training_data(
     for game_id in 1..=100 {
         let mut board = Board::initial_position();
         let mut turn_count = 1;
-        let mut winner = None;
+        let winner;
         let mut game_records: Vec<PositionRecord> = Vec::new();
         let mut game_history: Vec<u64> = Vec::new(); // ★追加: 履歴
 
