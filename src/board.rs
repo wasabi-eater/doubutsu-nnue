@@ -40,15 +40,6 @@ impl From<u8> for PieceKind {
     }
 }
 impl PieceKind {
-    pub fn piece_id(self) -> usize {
-        match self {
-            Self::Lion => 0,
-            Self::Giraffe => 1,
-            Self::Elephant => 2,
-            Self::Chick => 3,
-            Self::Hen => 4,
-        }
-    }
     pub const ALL: [Self; 5] = [
         Self::Lion,
         Self::Giraffe,
@@ -171,8 +162,8 @@ impl Board {
     }
 
     pub fn winner(&self) -> Option<Player> {
-        let sente_lion = PieceKind::Lion.piece_id();
-        let gote_lion = PieceKind::Lion.piece_id() + PIECE_TYPE_COUNT / 2;
+        let sente_lion = PieceKind::Lion as usize;
+        let gote_lion = PieceKind::Lion as usize + PIECE_TYPE_COUNT / 2;
 
         if self.piece_bbs[sente_lion] == 0 {
             return Some(Player::Gote);
