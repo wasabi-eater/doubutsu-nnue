@@ -92,7 +92,7 @@ fn play_vs_human(
     let mut board = Board::initial_position();
     let limits = SearchLimits {
         max_time: Duration::from_millis(1000),
-        max_depth: 15,
+        max_depth: 31,
     };
 
     println!("\n対局を開始します！");
@@ -189,7 +189,7 @@ fn generate_training_data(
 ) {
     let limits = SearchLimits {
         max_time: Duration::from_millis(50),
-        max_depth: 7,
+        max_depth: 11,
     };
     let mut rng = XorShift64::new();
 
