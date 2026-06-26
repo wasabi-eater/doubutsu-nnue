@@ -70,6 +70,11 @@ pub fn search_best_move(
             nodes_searched,
             start_time.elapsed().as_millis()
         );
+
+        if best_score.abs() >= 20000 {
+            println!("詰みを発見したので探索を終了します");
+            break;
+        }
     }
 
     best_move
