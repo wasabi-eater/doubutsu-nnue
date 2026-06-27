@@ -109,7 +109,7 @@ impl Board {
             let opponent_occupied = self.occupied_by(opponent);
             if (opponent_occupied & to_bit) != 0 {
                 // 取った駒の種類を特定する
-                for kind in [PieceKind::Lion, PieceKind::Giraffe, PieceKind::Elephant, PieceKind::Chick, PieceKind::Hen] {
+                for kind in PieceKind::ALL {
                     let opp_idx = get_piece_index(opponent, kind);
                     if (self.piece_bbs[opp_idx] & to_bit) != 0 {
                         // 敵の盤面から駒を消す
