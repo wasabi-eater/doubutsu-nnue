@@ -18,7 +18,7 @@ struct Search<'zt, 'tt, 'nw> {
     start_time: Instant,
     max_time: Duration,
     nodes: usize,
-    history: Vec<u64>, // 千日手判定のためのハッシュ履歴
+    history: Vec<(u64, Board)>, // 千日手判定のためのハッシュと盤面の履歴
 }
 
 // --- メイン探索関数 ---
@@ -29,10 +29,16 @@ pub fn search_best_move(
     tt: &mut TranspositionTable,
     nnue_weights: &NnueWeights,
     limits: &SearchLimits,
-    game_history: &[u64], // 実際の対局でのこれまでの履歴
+    game_history: &[(u64, Board)], // 実際の対局でのこれまでの履歴
 ) -> Move {
     let start_time = Instant::now();
-    let mut best_move = Move(0); // 最終的に返す最善手
+
+    // ★フェイルセーフ: 万が一探索が手を選べなかった場合でも盤面が壊れないよう、
+    // 未定義のMove(0)ではなく、合法手のどれかをデフォルトに設定しておく
+    let mut moves = Vec::new();
+    generate_moves(board, &mut moves);
+    let mut best_move = moves.first().copied().unwrap_or(Move(0));
+
     let mut best_score = 0;
 
     // 1. ルートノードでの初期計算
@@ -56,8 +62,9 @@ pub fn search_best_move(
         let score = search.search_pvs(
             board,
             depth,
-            -30000, // 初期アルファ値 (-∞)
-            30000,  // 初期ベータ値 (+∞)
+            0, // ★追加: ply = 0 (ルートからの手数)
+            -30000,
+            30000,
             &initial_acc,
             current_hash,
         );
@@ -94,13 +101,14 @@ pub fn search_best_move(
 
 impl Search<'_, '_, '_> {
     // --- 千日手判定メソッド ---
-    fn is_repetition(&self, current_hash: u64) -> bool {
+    fn is_repetition(&self, current_hash: u64, current_board: &Board) -> bool {
         let len = self.history.len();
         if len >= 2 {
             // 手番が同じ局面だけを比較するため、2手ずつ遡る
             let mut i = len.saturating_sub(2);
             loop {
-                if self.history[i] == current_hash {
+                // ハッシュ値が一致し、かつ盤面も完全に一致した場合のみ千日手とする
+                if self.history[i].0 == current_hash && self.history[i].1 == *current_board {
                     return true;
                 }
                 if i < 2 {
@@ -111,12 +119,13 @@ impl Search<'_, '_, '_> {
         }
         false
     }
-    
+
     // --- 静止探索 (Quiescence Search) ---
     // 激しい手（取る、成る、トライ）だけを底まで読み切る専用の探索関数
     fn search_q(
         &mut self,
         board: &Board,
+        ply: usize, // ★追加: ルートからの手数
         mut alpha: i32,
         beta: i32,
         current_acc: &Accumulator,
@@ -134,8 +143,8 @@ impl Search<'_, '_, '_> {
             }
         }
 
-        // --- ★ 追加: qsearch内の千日手判定 ---
-        if self.is_repetition(current_hash) {
+        // --- ★ 修正: ルート(ply == 0)では千日手で打ち切らない ---
+        if ply > 0 && self.is_repetition(current_hash, board) {
             return 0;
         }
 
@@ -188,8 +197,8 @@ impl Search<'_, '_, '_> {
             })
             .collect();
 
-        // ★追加: 探索を下る前に現在のハッシュを履歴に積む
-        self.history.push(current_hash);
+        // ★探索を下る前に現在のハッシュと盤面を履歴に積む
+        self.history.push((current_hash, board.clone()));
 
         // 3. 激しい手だけをアルファベータ探索で読み切る
         for m in noisy_moves {
@@ -205,6 +214,7 @@ impl Search<'_, '_, '_> {
 
             let score = -self.search_q(
                 &next_board,
+                ply + 1, // ★追加: 階層を深くする
                 -beta,
                 -alpha,
                 &next_acc,
@@ -231,6 +241,7 @@ impl Search<'_, '_, '_> {
         &mut self,
         board: &Board,
         depth: u8,
+        ply: usize, // ★追加: ルートからの手数
         mut alpha: i32,
         beta: i32,
         current_acc: &Accumulator,
@@ -247,14 +258,15 @@ impl Search<'_, '_, '_> {
         }
 
         // --- 千日手なら即座に引き分けスコア(0)を返す ---
-        if self.is_repetition(current_hash) {
+        // ★ 修正: ルートノード (ply == 0) では打ち切らない (指し手を選ぶ必要があるため)
+        if ply > 0 && self.is_repetition(current_hash, board) {
             return 0;
         }
 
         // 1. 終了条件の確認
         if depth == 0 {
             // ★ 末端ノードに達したら、NNUEを直接呼ばずに静止探索 (qsearch) に移行する
-            return self.search_q(board, alpha, beta, current_acc, current_hash, 0);
+            return self.search_q(board, ply, alpha, beta, current_acc, current_hash, 0);
         }
 
         // 数千ノードに1回くらいの頻度で時間切れをチェックし、タイムアウトなら即座に抜ける
@@ -287,8 +299,8 @@ impl Search<'_, '_, '_> {
         let mut best_move = moves.first().copied().unwrap_or(Move(0));
         let mut is_first_move = true;
 
-        // 探索を下る前に現在のハッシュを履歴に積む
-        self.history.push(current_hash);
+        // 探索を下る前に現在のハッシュと盤面を履歴に積む
+        self.history.push((current_hash, board.clone()));
 
         for m in moves {
             let mut next_board = board.clone();
@@ -305,14 +317,22 @@ impl Search<'_, '_, '_> {
             let score;
             if is_first_move {
                 // 最初の手は全幅の窓 (Full Window) で調べる
-                score =
-                    -self.search_pvs(&next_board, depth - 1, -beta, -alpha, &next_acc, next_hash);
+                score = -self.search_pvs(
+                    &next_board,
+                    depth - 1,
+                    ply + 1,
+                    -beta,
+                    -alpha,
+                    &next_acc,
+                    next_hash,
+                );
                 is_first_move = false;
             } else {
                 // ★ Null Window Search (幅1の窓) による高速化 ★
                 let null_score = -self.search_pvs(
                     &next_board,
                     depth - 1,
+                    ply + 1,
                     -alpha - 1,
                     -alpha,
                     &next_acc,
@@ -323,6 +343,7 @@ impl Search<'_, '_, '_> {
                     score = -self.search_pvs(
                         &next_board,
                         depth - 1,
+                        ply + 1,
                         -beta,
                         -null_score,
                         &next_acc,

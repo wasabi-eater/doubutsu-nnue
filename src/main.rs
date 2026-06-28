@@ -98,7 +98,7 @@ fn play_vs_human(
     println!("\n対局を開始します！");
 
     let mut turn_count = 1;
-    let mut game_history: Vec<u64> = Vec::new(); // ★追加: 実際のゲーム履歴
+    let mut game_history: Vec<(u64, Board)> = Vec::new(); // ★変更: 実際のゲーム履歴
 
     loop {
         println!("\n====================================");
@@ -108,7 +108,10 @@ fn play_vs_human(
         let current_hash = board.compute_initial_hash(z_table);
 
         // ★追加: 実際の対局における千日手判定 (3回現れたら引き分け)
-        let count = game_history.iter().filter(|&&h| h == current_hash).count();
+        let count = game_history
+            .iter()
+            .filter(|&&(h, ref b)| h == current_hash && *b == board)
+            .count();
         if count >= 2 {
             // 今回で3回目
             println!("\n====================================");
@@ -159,7 +162,7 @@ fn play_vs_human(
             println!("👤 あなたの指し手: {}", move_to_string(best_move));
         }
 
-        game_history.push(current_hash); // 履歴に追加
+        game_history.push((current_hash, board.clone())); // 履歴に追加
         board.make_move(best_move, z_table, current_hash);
 
         if let Some(w) = board.winner() {
@@ -200,7 +203,7 @@ fn generate_training_data(
         let mut turn_count = 1;
         let winner;
         let mut game_records: Vec<PositionRecord> = Vec::new();
-        let mut game_history: Vec<u64> = Vec::new(); // ★追加: 履歴
+        let mut game_history: Vec<(u64, Board)> = Vec::new(); // ★変更: 履歴
 
         let random_plies = rng.next_usize(3) + 1;
 
@@ -213,7 +216,10 @@ fn generate_training_data(
             let current_hash = board.compute_initial_hash(z_table);
 
             // ★追加: 千日手判定
-            let count = game_history.iter().filter(|&&h| h == current_hash).count();
+            let count = game_history
+                .iter()
+                .filter(|&&(h, ref b)| h == current_hash && *b == board)
+                .count();
             if count >= 2 {
                 winner = None;
                 break;
@@ -234,7 +240,7 @@ fn generate_training_data(
                 search_best_move(&board, z_table, tt, weights, &limits, &game_history)
             };
 
-            game_history.push(current_hash);
+            game_history.push((current_hash, board.clone()));
             board.make_move(best_move, z_table, current_hash);
 
             if let Some(w) = board.winner() {

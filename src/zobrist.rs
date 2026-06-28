@@ -1,4 +1,4 @@
-// Zobrist Hashingと置換表 (Transposition Table) の実装イメージ
+// Zobrist Hashingと置換表 (Transposition Table) の実装
 
 use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::Move;
