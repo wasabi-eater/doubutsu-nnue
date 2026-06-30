@@ -5,7 +5,11 @@ use crate::move_gen::{Move, generate_moves};
 use crate::nnue::{Accumulator, NnueWeights};
 use crate::zobrist::{TTEntry, TranspositionTable, ZobristTable};
 
-// 探索の制限時間や深さの条件
+// --- 置換表のノードタイプ定数 ---
+const EXACT: u8 = 0;
+const LOWER_BOUND: u8 = 1; // ベータカット (これ以上良い手がある)
+const UPPER_BOUND: u8 = 2; // アルファカット (悪い手だった)
+
 pub struct SearchLimits {
     pub max_time: Duration,
     pub max_depth: u8,
@@ -21,8 +25,17 @@ struct Search<'zt, 'tt, 'nw> {
     history: Vec<(u64, Board)>, // 千日手判定のためのハッシュと盤面の履歴
 }
 
-// --- メイン探索関数 ---
-// 外部（UIや対局プロトコル）から呼ばれるエントリーポイントです。
+// 駒の価値 (Move Ordering用)
+fn piece_value(kind: PieceKind) -> i32 {
+    match kind {
+        PieceKind::Chick => 100,
+        PieceKind::Hen => 300,
+        PieceKind::Giraffe => 400,
+        PieceKind::Elephant => 400,
+        PieceKind::Lion => 10000,
+    }
+}
+
 pub fn search_best_move(
     board: &Board,
     z_table: &ZobristTable,
@@ -58,20 +71,10 @@ pub fn search_best_move(
             history: game_history.to_vec(), // 実際の履歴をコピーして探索用の履歴とする
         };
 
-        // PVS/アルファベータ探索を呼び出す
-        let score = search.search_pvs(
-            board,
-            depth,
-            0, // ★追加: ply = 0 (ルートからの手数)
-            -30000,
-            30000,
-            &initial_acc,
-            current_hash,
-        );
+        let score = search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
 
         let nodes_searched = search.nodes;
 
-        // ★ タイムマネジメント ★
         if start_time.elapsed() >= limits.max_time {
             println!("時間切れのため、深さ {} の探索を中断しました。", depth);
             break;
@@ -104,10 +107,8 @@ impl Search<'_, '_, '_> {
     fn is_repetition(&self, current_hash: u64, current_board: &Board) -> bool {
         let len = self.history.len();
         if len >= 2 {
-            // 手番が同じ局面だけを比較するため、2手ずつ遡る
             let mut i = len.saturating_sub(2);
             loop {
-                // ハッシュ値が一致し、かつ盤面も完全に一致した場合のみ千日手とする
                 if self.history[i].0 == current_hash && self.history[i].1 == *current_board {
                     return true;
                 }
@@ -125,37 +126,33 @@ impl Search<'_, '_, '_> {
     fn search_q(
         &mut self,
         board: &Board,
-        ply: usize, // ★追加: ルートからの手数
+        ply: usize,
         mut alpha: i32,
         beta: i32,
         current_acc: &Accumulator,
         current_hash: u64,
-        q_depth: i8, // 探索が深くなりすぎるのを防ぐためのカウンター
+        q_depth: i8,
     ) -> i32 {
         self.nodes += 1;
 
         // 終局判定
         if let Some(winner) = board.winner() {
-            if winner == board.side_to_move {
-                return 20000;
+            return if winner == board.side_to_move {
+                20000
             } else {
-                return -20000;
-            }
+                -20000
+            };
         }
 
-        // --- ★ 修正: ルート(ply == 0)では千日手で打ち切らない ---
         if ply > 0 && self.is_repetition(current_hash, board) {
             return 0;
         }
 
         if self.nodes & 2047 == 0 && self.start_time.elapsed() >= self.max_time {
-            return 0; // タイムアウトフラグ
+            return 0;
         }
 
-        // 1. Stand-pat (現状維持) のスコア評価
-        // これ以上何もしなくても得られる評価値。これがbetaを超えていたら即座にカット(フェイルソフト)
         let stand_pat = current_acc.evaluate(self.nnue_weights);
-
         if stand_pat >= beta {
             return stand_pat;
         }
@@ -163,44 +160,50 @@ impl Search<'_, '_, '_> {
             alpha = stand_pat;
         }
 
-        // 無限ループ対策: 一定以上深く潜ったら打ち切る
         if q_depth < -10 {
             return stand_pat;
         }
 
         let mut moves = Vec::new();
         generate_moves(board, &mut moves);
-
         let opponent = board.side_to_move.opponent();
         let opponent_occupied = board.occupied_by(opponent);
 
-        // 2. Move Filtering (激しい手だけを抽出)
-        let noisy_moves: Vec<Move> = moves
+        // Move Filtering (激しい手だけを抽出)
+        let mut noisy_moves: Vec<Move> = moves
             .into_iter()
             .filter(|&m| {
                 if m.is_drop() {
                     return false;
-                } // 持ち駒を打つ手は一旦「静か」とみなす
-
+                }
                 let to_bit = 1 << m.sq_to();
                 let is_capture = (opponent_occupied & to_bit) != 0;
                 let is_promote = m.is_promote();
-
-                // どうぶつ将棋特有: ライオンの敵陣への移動（トライ）も激しい手とみなす
-                let is_lion_entering_enemy_zone = m.piece_kind() == PieceKind::Lion
+                let is_lion_entering = m.piece_kind() == PieceKind::Lion
                     && match board.side_to_move {
                         Player::Sente => m.sq_to() < 3,
                         Player::Gote => m.sq_to() > 8,
                     };
-
-                is_capture || is_promote || is_lion_entering_enemy_zone
+                is_capture || is_promote || is_lion_entering
             })
             .collect();
 
-        // ★探索を下る前に現在のハッシュと盤面を履歴に積む
+        // ★ 静止探索での Move Ordering (取る手を強力に優先)
+        noisy_moves.sort_by_cached_key(|&m| {
+            let mut move_score = 0;
+            let to_bit = 1 << m.sq_to();
+            if (opponent_occupied & to_bit) != 0 {
+                // MVV-LVA: 取れる駒の価値が高く、取る側の駒の価値が低いほど優先
+                move_score += 10000 - piece_value(m.piece_kind());
+            }
+            if m.is_promote() {
+                move_score += 5000;
+            }
+            -move_score // 降順ソート
+        });
+
         self.history.push((current_hash, board.clone()));
 
-        // 3. 激しい手だけをアルファベータ探索で読み切る
         for m in noisy_moves {
             let mut next_board = board.clone();
             let (feature_update, next_hash) = next_board.make_move(m, self.z_table, current_hash);
@@ -214,7 +217,7 @@ impl Search<'_, '_, '_> {
 
             let score = -self.search_q(
                 &next_board,
-                ply + 1, // ★追加: 階層を深くする
+                ply + 1,
                 -beta,
                 -alpha,
                 &next_acc,
@@ -223,7 +226,7 @@ impl Search<'_, '_, '_> {
             );
 
             if score >= beta {
-                self.history.pop(); // ★ ベータカットで抜ける時も忘れずに履歴を戻す
+                self.history.pop();
                 return score;
             }
             if score > alpha {
@@ -231,82 +234,96 @@ impl Search<'_, '_, '_> {
             }
         }
 
-        self.history.pop(); // ★ 全ての探索が終わったら履歴を戻す
-
+        self.history.pop();
         alpha
     }
 
-    // --- PVS (Principal Variation Search) のコア関数 ---
     fn search_pvs(
         &mut self,
         board: &Board,
         depth: u8,
-        ply: usize, // ★追加: ルートからの手数
+        ply: usize,
         mut alpha: i32,
         beta: i32,
         current_acc: &Accumulator,
         current_hash: u64,
     ) -> i32 {
         self.nodes += 1;
+        let alpha_orig = alpha; // ★ 枝刈りタイプ記録用に保存
 
         if let Some(winner) = board.winner() {
-            if winner == board.side_to_move {
-                return 20000 + depth as i32;
+            return if winner == board.side_to_move {
+                20000 + depth as i32
             } else {
-                return -20000 - depth as i32;
-            }
+                -20000 - depth as i32
+            };
         }
 
-        // --- 千日手なら即座に引き分けスコア(0)を返す ---
-        // ★ 修正: ルートノード (ply == 0) では打ち切らない (指し手を選ぶ必要があるため)
         if ply > 0 && self.is_repetition(current_hash, board) {
             return 0;
         }
 
-        // 1. 終了条件の確認
         if depth == 0 {
-            // ★ 末端ノードに達したら、NNUEを直接呼ばずに静止探索 (qsearch) に移行する
             return self.search_q(board, ply, alpha, beta, current_acc, current_hash, 0);
         }
 
-        // 数千ノードに1回くらいの頻度で時間切れをチェックし、タイムアウトなら即座に抜ける
         if self.nodes & 2047 == 0 && self.start_time.elapsed() >= self.max_time {
-            return 0; // タイムアウトフラグとして扱う
+            return 0;
         }
 
-        // 2. 置換表 (TT) のルックアップ
+        // ★ 置換表 (TT) による枝刈りの完全実装
         let mut tt_move = None;
         if let Some(entry) = self.tt.probe(current_hash) {
             tt_move = Some(entry.best_move);
-            // もし十分な深さまで探索済みで、かつ評価値が境界内ならそのまま返す (TT Cut)
-            // ... 省略 ...
+            if entry.depth >= depth {
+                if entry.node_type == EXACT {
+                    return entry.score;
+                }
+                if entry.node_type == LOWER_BOUND && entry.score >= beta {
+                    return entry.score;
+                }
+                if entry.node_type == UPPER_BOUND && entry.score <= alpha {
+                    return entry.score;
+                }
+            }
         }
 
         let mut moves = Vec::new();
         generate_moves(board, &mut moves);
-
         if moves.is_empty() {
             return -20000 - depth as i32;
         }
 
-        if let Some(pv_move) = tt_move
-            && let Some(pos) = moves.iter().position(|&m| m == pv_move)
-        {
-            moves.swap(0, pos);
-        }
+        // ★ Move Ordering (優先度をつけてソート)
+        let opponent = board.side_to_move.opponent();
+        let opponent_occupied = board.occupied_by(opponent);
+        moves.sort_by_cached_key(|&m| {
+            if Some(m) == tt_move {
+                return i32::MAX;
+            } // TT最善手を最優先
+
+            let mut move_score = 0;
+            if !m.is_drop() {
+                let to_bit = 1 << m.sq_to();
+                if (opponent_occupied & to_bit) != 0 {
+                    move_score += 10000 - piece_value(m.piece_kind());
+                }
+                if m.is_promote() {
+                    move_score += 5000;
+                }
+            }
+            -move_score
+        });
 
         let mut best_score = -30000;
         let mut best_move = moves.first().copied().unwrap_or(Move(0));
         let mut is_first_move = true;
 
-        // 探索を下る前に現在のハッシュと盤面を履歴に積む
         self.history.push((current_hash, board.clone()));
 
         for m in moves {
             let mut next_board = board.clone();
-            // NNUEのFeatureUpdateとZobristの差分ハッシュを同時に取得！
             let (feature_update, next_hash) = next_board.make_move(m, self.z_table, current_hash);
-
             let mut next_acc = current_acc.clone();
             next_acc.update(
                 self.nnue_weights,
@@ -316,7 +333,6 @@ impl Search<'_, '_, '_> {
 
             let score;
             if is_first_move {
-                // 最初の手は全幅の窓 (Full Window) で調べる
                 score = -self.search_pvs(
                     &next_board,
                     depth - 1,
@@ -328,7 +344,6 @@ impl Search<'_, '_, '_> {
                 );
                 is_first_move = false;
             } else {
-                // ★ Null Window Search (幅1の窓) による高速化 ★
                 let null_score = -self.search_pvs(
                     &next_board,
                     depth - 1,
@@ -338,7 +353,6 @@ impl Search<'_, '_, '_> {
                     &next_acc,
                     next_hash,
                 );
-
                 if null_score > alpha && null_score < beta {
                     score = -self.search_pvs(
                         &next_board,
@@ -354,7 +368,6 @@ impl Search<'_, '_, '_> {
                 }
             }
 
-            // αβの更新
             if score > best_score {
                 best_score = score;
                 best_move = m;
@@ -362,23 +375,32 @@ impl Search<'_, '_, '_> {
                     alpha = score;
                 }
                 if alpha >= beta {
-                    // ベータカット (枝刈り成功！)
                     break;
                 }
             }
         }
 
-        // 探索から戻ってきたら履歴から消す
         self.history.pop();
 
-        // 探索結果を置換表に保存する
-        self.tt.store(TTEntry {
-            key: current_hash,
-            depth,
-            score: best_score,
-            best_move,
-            node_type: 0, // 省略
-        });
+        // ★ 置換表に探索結果を保存
+        let node_type = if best_score <= alpha_orig {
+            UPPER_BOUND
+        } else if best_score >= beta {
+            LOWER_BOUND
+        } else {
+            EXACT
+        };
+
+        if best_score.abs() < 19000 {
+            // 詰みスコア以外を保存
+            self.tt.store(TTEntry {
+                key: current_hash,
+                depth,
+                score: best_score,
+                best_move,
+                node_type,
+            });
+        }
 
         best_score
     }

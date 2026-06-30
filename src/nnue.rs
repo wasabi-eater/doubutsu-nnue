@@ -4,7 +4,7 @@ use std::io::{Read, Result};
 // --- 定数の定義 ---
 // train_nnue.py の定義と完全に一致させます
 pub const FEATURE_SIZE: usize = 132;
-pub const HIDDEN_SIZE: usize = 32;
+pub const HIDDEN_SIZE: usize = 128;
 
 // 量子化関連の定数
 pub const WEIGHT_SCALE_BITS: i32 = 6; // 2^6 = 64
