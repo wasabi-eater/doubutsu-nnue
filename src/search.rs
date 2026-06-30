@@ -303,7 +303,7 @@ impl Search<'_, '_, '_> {
         let opponent_occupied = board.occupied_by(opponent);
         moves.sort_by_cached_key(|&m| {
             if Some(m) == tt_move {
-                return std::i32::MAX;
+                return i32::MAX;
             }
 
             let mut move_score = 0;
