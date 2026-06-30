@@ -7,8 +7,8 @@ use crate::zobrist::{TTEntry, TranspositionTable, ZobristTable};
 
 // --- 置換表のノードタイプ定数 ---
 const EXACT: u8 = 0;
-const LOWER_BOUND: u8 = 1; // ベータカット (これ以上良い手がある)
-const UPPER_BOUND: u8 = 2; // アルファカット (悪い手だった)
+const LOWER_BOUND: u8 = 1;
+const UPPER_BOUND: u8 = 2;
 
 pub struct SearchLimits {
     pub max_time: Duration,
@@ -22,7 +22,7 @@ struct Search<'zt, 'tt, 'nw> {
     start_time: Instant,
     max_time: Duration,
     nodes: usize,
-    history: Vec<(u64, Board)>, // 千日手判定のためのハッシュと盤面の履歴
+    history: Vec<(u64, Board)>,
 }
 
 // 駒の価値 (Move Ordering用)
@@ -42,7 +42,7 @@ pub fn search_best_move(
     tt: &mut TranspositionTable,
     nnue_weights: &NnueWeights,
     limits: &SearchLimits,
-    game_history: &[(u64, Board)], // 実際の対局でのこれまでの履歴
+    game_history: &[(u64, Board)],
 ) -> Move {
     let start_time = Instant::now();
 
@@ -68,7 +68,7 @@ pub fn search_best_move(
             max_time: limits.max_time,
             nodes: 0,
             start_time,
-            history: game_history.to_vec(), // 実際の履歴をコピーして探索用の履歴とする
+            history: game_history.to_vec(),
         };
 
         let score = search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
@@ -93,17 +93,16 @@ pub fn search_best_move(
             start_time.elapsed().as_millis()
         );
 
-        if best_score.abs() >= 20000 {
+        // 詰みスコア(19000以上)を発見したら探索を打ち切って直ちにその手を指す
+        if best_score.abs() >= 19000 {
             println!("詰みを発見したので探索を終了します");
             break;
         }
     }
-
     best_move
 }
 
 impl Search<'_, '_, '_> {
-    // --- 千日手判定メソッド ---
     fn is_repetition(&self, current_hash: u64, current_board: &Board) -> bool {
         let len = self.history.len();
         if len >= 2 {
@@ -121,8 +120,6 @@ impl Search<'_, '_, '_> {
         false
     }
 
-    // --- 静止探索 (Quiescence Search) ---
-    // 激しい手（取る、成る、トライ）だけを底まで読み切る専用の探索関数
     fn search_q(
         &mut self,
         board: &Board,
@@ -138,9 +135,9 @@ impl Search<'_, '_, '_> {
         // 終局判定
         if let Some(winner) = board.winner() {
             return if winner == board.side_to_move {
-                20000
+                20000 - ply as i32
             } else {
-                -20000
+                -20000 + ply as i32
             };
         }
 
@@ -169,7 +166,6 @@ impl Search<'_, '_, '_> {
         let opponent = board.side_to_move.opponent();
         let opponent_occupied = board.occupied_by(opponent);
 
-        // Move Filtering (激しい手だけを抽出)
         let mut noisy_moves: Vec<Move> = moves
             .into_iter()
             .filter(|&m| {
@@ -249,13 +245,14 @@ impl Search<'_, '_, '_> {
         current_hash: u64,
     ) -> i32 {
         self.nodes += 1;
-        let alpha_orig = alpha; // ★ 枝刈りタイプ記録用に保存
+        let alpha_orig = alpha;
 
         if let Some(winner) = board.winner() {
+            // ★ 修正1: 詰みスコアの算出を depth から ply (手数) 基準に変更
             return if winner == board.side_to_move {
-                20000 + depth as i32
+                20000 - ply as i32
             } else {
-                -20000 - depth as i32
+                -20000 + ply as i32
             };
         }
 
@@ -276,14 +273,22 @@ impl Search<'_, '_, '_> {
         if let Some(entry) = self.tt.probe(current_hash) {
             tt_move = Some(entry.best_move);
             if entry.depth >= depth {
+                let mut score = entry.score;
+                // ★ 修正2: TTから取り出した詰みスコアを、現在のノードからの相対スコアに復元する
+                if score > 19000 {
+                    score -= ply as i32;
+                } else if score < -19000 {
+                    score += ply as i32;
+                }
+
                 if entry.node_type == EXACT {
-                    return entry.score;
+                    return score;
                 }
-                if entry.node_type == LOWER_BOUND && entry.score >= beta {
-                    return entry.score;
+                if entry.node_type == LOWER_BOUND && score >= beta {
+                    return score;
                 }
-                if entry.node_type == UPPER_BOUND && entry.score <= alpha {
-                    return entry.score;
+                if entry.node_type == UPPER_BOUND && score <= alpha {
+                    return score;
                 }
             }
         }
@@ -291,16 +296,15 @@ impl Search<'_, '_, '_> {
         let mut moves = Vec::new();
         generate_moves(board, &mut moves);
         if moves.is_empty() {
-            return -20000 - depth as i32;
-        }
+            return -20000 + ply as i32;
+        } // ★ここも ply に修正
 
-        // ★ Move Ordering (優先度をつけてソート)
         let opponent = board.side_to_move.opponent();
         let opponent_occupied = board.occupied_by(opponent);
         moves.sort_by_cached_key(|&m| {
             if Some(m) == tt_move {
-                return i32::MAX;
-            } // TT最善手を最優先
+                return std::i32::MAX;
+            }
 
             let mut move_score = 0;
             if !m.is_drop() {
@@ -382,7 +386,6 @@ impl Search<'_, '_, '_> {
 
         self.history.pop();
 
-        // ★ 置換表に探索結果を保存
         let node_type = if best_score <= alpha_orig {
             UPPER_BOUND
         } else if best_score >= beta {
@@ -391,16 +394,21 @@ impl Search<'_, '_, '_> {
             EXACT
         };
 
-        if best_score.abs() < 19000 {
-            // 詰みスコア以外を保存
-            self.tt.store(TTEntry {
-                key: current_hash,
-                depth,
-                score: best_score,
-                best_move,
-                node_type,
-            });
+        // 置換表(TT)に詰みスコアを保存する前の補正 (ルートからの絶対手数への変換)
+        let mut tt_score = best_score;
+        if tt_score > 19000 {
+            tt_score += ply as i32;
+        } else if tt_score < -19000 {
+            tt_score -= ply as i32;
         }
+
+        self.tt.store(TTEntry {
+            key: current_hash,
+            depth,
+            score: tt_score,
+            best_move,
+            node_type,
+        });
 
         best_score
     }
