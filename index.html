@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>🦁 最強どうぶつ将棋AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Hiragino Maru Gothic ProN', 'Rounded M+ 1c', 'Kosugi Maru', sans-serif;
+            background-color: #f9fafb;
+            touch-action: manipulation;
+        }
+        .cell { width: 80px; height: 80px; }
+        @media (max-width: 400px) { .cell { width: 70px; height: 70px; } }
+        
+        .piece-gote { transform: rotate(180deg); }
+        
+        .board-bg {
+            background-color: #e6a756;
+            background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.03) 10px, rgba(0,0,0,0.03) 20px);
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center min-h-screen py-6 text-gray-800">
+
+    <div class="w-full max-w-md px-4">
+        <header class="text-center mb-4">
+            <h1 class="text-3xl font-bold text-amber-600 mb-2">どうぶつ将棋 AI</h1>
+            <p id="message" class="text-lg font-semibold bg-white py-2 px-4 rounded-full shadow-sm text-gray-600 border border-gray-200">
+                WASMを読み込んでいます...
+            </p>
+        </header>
+
+        <main id="game-container" class="opacity-0 transition-opacity duration-500">
+            <!-- 上部(相手)の持ち駒 -->
+            <div id="top-hand" class="flex gap-2 justify-center mb-4 min-h-[4rem]"></div>
+
+            <!-- 将棋盤 -->
+            <div class="p-3 bg-amber-800 rounded-xl shadow-xl w-fit mx-auto border-b-8 border-amber-900">
+                <div id="board" class="grid grid-cols-3 gap-1 board-bg p-1 border-2 border-amber-900 rounded">
+                    <!-- 動的生成 -->
+                </div>
+            </div>
+
+            <!-- 下部(自分)の持ち駒 -->
+            <div id="bottom-hand" class="flex gap-2 justify-center mt-4 min-h-[4rem]"></div>
+            
+            <!-- コントロールパネル -->
+            <div class="mt-8 flex flex-col items-center gap-4">
+                <!-- 先手/後手の切り替えスイッチ -->
+                <div class="flex bg-white rounded-full p-1 shadow border border-gray-200">
+                    <label class="cursor-pointer">
+                        <input type="radio" name="turn" value="1" class="peer sr-only" checked>
+                        <div class="px-4 py-2 rounded-full text-gray-600 peer-checked:bg-amber-500 peer-checked:text-white font-bold transition-colors">
+                            🐥 先手 (あなた)
+                        </div>
+                    </label>
+                    <label class="cursor-pointer">
+                        <input type="radio" name="turn" value="2" class="peer sr-only">
+                        <div class="px-4 py-2 rounded-full text-gray-600 peer-checked:bg-amber-500 peer-checked:text-white font-bold transition-colors">
+                            🐶 後手 (あなた)
+                        </div>
+                    </label>
+                </div>
+
+                <button id="reset-btn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-6 rounded-full shadow transition-colors w-full max-w-[200px]">
+                    🔄 はじめから
+                </button>
+            </div>
+        </main>
+    </div>
+
+    <script type="module">
+        import init, { AnimalShogiWasm } from './pkg/doubutsu_nnue.js';
+
+        const PIECE_MAP = {
+            'L': '🦁', 'l': '🦁', 'G': '🦒', 'g': '🦒',
+            'E': '🐘', 'e': '🐘', 'C': '🐥', 'c': '🐥', 'H': '🐔', 'h': '🐔'
+        };
+        const HAND_KINDS = [
+            { val: 3, key: 'chick', emoji: '🐥' },
+            { val: 1, key: 'giraffe', emoji: '🦒' },
+            { val: 2, key: 'elephant', emoji: '🐘' }
+        ];
+
+        let game = null;
+        let selectedCell = null; 
+        let selectedHand = null; 
+        let playerTurn = 1; // 1: 先手, 2: 後手
+        let isAiThinking = false;
+
+        async function run() {
+            try {
+                await init();
+                game = new AnimalShogiWasm();
+                
+                document.getElementById('game-container').classList.remove('opacity-0');
+                
+                // リセットボタン
+                document.getElementById('reset-btn').addEventListener('click', resetGame);
+                
+                // 先後切り替え
+                document.querySelectorAll('input[name="turn"]').forEach(radio => {
+                    radio.addEventListener('change', (e) => {
+                        playerTurn = parseInt(e.target.value);
+                        resetGame();
+                    });
+                });
+                
+                updateUI();
+            } catch (e) {
+                document.getElementById('message').innerText = "❌ 読み込みエラー。WASMファイルを確認してください。";
+                console.error(e);
+            }
+        }
+
+        function resetGame() {
+            if (game) {
+                game.reset();
+                selectedCell = null;
+                selectedHand = null;
+                isAiThinking = false;
+                updateUI();
+            }
+        }
+
+        function parseBoardString(boardStr) {
+            const lines = boardStr.trim().split('\n');
+            const goteMatch = lines[0].match(/ひよこ(\d+), きりん(\d+), ぞう(\d+)/);
+            const goteHand = { chick: parseInt(goteMatch[1]), giraffe: parseInt(goteMatch[2]), elephant: parseInt(goteMatch[3]) };
+            
+            const board = new Array(12).fill(null);
+            for (let y = 0; y < 4; y++) {
+                const rowStr = lines[y + 2].substring(2);
+                for (let x = 0; x < 3; x++) {
+                    const pieceStr = rowStr.substring(x * 3, x * 3 + 3).trim();
+                    if (pieceStr !== '.') board[y * 3 + x] = pieceStr;
+                }
+            }
+            
+            const senteMatch = lines[6].match(/ひよこ(\d+), きりん(\d+), ぞう(\d+)/);
+            const senteHand = { chick: parseInt(senteMatch[1]), giraffe: parseInt(senteMatch[2]), elephant: parseInt(senteMatch[3]) };
+            
+            return { goteHand, board, senteHand };
+        }
+
+        function updateUI() {
+            const state = parseBoardString(game.get_board_string());
+            
+            // プレイヤーが先手か後手かで、描画の向きと持ち駒の位置を変える
+            if (playerTurn === 1) {
+                renderHand(state.goteHand, 'top', false);
+                renderHand(state.senteHand, 'bottom', true);
+            } else {
+                renderHand(state.senteHand, 'top', false);
+                renderHand(state.goteHand, 'bottom', true);
+            }
+            
+            renderBoard(state.board);
+            checkGameState();
+        }
+
+        function renderBoard(boardState) {
+            const container = document.getElementById('board');
+            container.innerHTML = '';
+            
+            // 人間が後手の場合は、盤面を180度回転(インデックスを逆順に配置)する
+            const indices = playerTurn === 1 
+                ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] 
+                : [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+            
+            indices.forEach(i => {
+                const cell = document.createElement('div');
+                cell.className = 'cell bg-amber-100 rounded border border-amber-300 relative flex items-center justify-center cursor-pointer transition-colors';
+                
+                if (selectedCell === i) {
+                    cell.classList.add('bg-yellow-200', 'ring-inset', 'ring-4', 'ring-yellow-400');
+                } else {
+                    cell.classList.add('hover:bg-amber-50');
+                }
+                
+                const pieceChar = boardState[i];
+                if (pieceChar) {
+                    const isGotePiece = pieceChar === pieceChar.toLowerCase();
+                    const emoji = PIECE_MAP[pieceChar];
+                    
+                    // 先手から見れば後手の駒が反転、後手から見れば先手の駒が反転
+                    const isRotated = playerTurn === 1 ? isGotePiece : !isGotePiece;
+                    
+                    const pieceEl = document.createElement('div');
+                    pieceEl.className = `text-[3rem] leading-none drop-shadow-md select-none ${isRotated ? 'piece-gote' : ''}`;
+                    pieceEl.innerText = emoji;
+                    cell.appendChild(pieceEl);
+                }
+                
+                cell.onclick = () => handleCellClick(i, pieceChar);
+                container.appendChild(cell);
+            });
+        }
+
+        function renderHand(handState, position, isHuman) {
+            const container = document.getElementById(`${position}-hand`);
+            container.innerHTML = '';
+            
+            HAND_KINDS.forEach(k => {
+                const count = handState[k.key];
+                
+                const el = document.createElement('div');
+                el.className = `relative w-[4.5rem] h-[4.5rem] border-2 rounded-xl flex items-center justify-center transition-all ${isHuman && count > 0 ? 'cursor-pointer hover:scale-105 bg-white shadow-sm' : 'bg-gray-100 border-gray-200 opacity-80'}`;
+                
+                if (isHuman && selectedHand === k.val) {
+                    el.classList.add('border-yellow-400', 'bg-yellow-50', 'ring-4', 'ring-yellow-200');
+                } else if (isHuman && count > 0) {
+                    el.classList.add('border-gray-300');
+                }
+                
+                if (count > 0) {
+                    const pieceEl = document.createElement('div');
+                    // AI側の持ち駒は上下反転させる
+                    pieceEl.className = `text-4xl select-none ${!isHuman ? 'piece-gote' : ''}`;
+                    pieceEl.innerText = k.emoji;
+                    el.appendChild(pieceEl);
+                    
+                    const badge = document.createElement('span');
+                    badge.className = 'absolute -bottom-2 -right-2 bg-gray-800 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center shadow';
+                    badge.innerText = count;
+                    el.appendChild(badge);
+                }
+                
+                if (isHuman) {
+                    el.onclick = () => handleHandClick(k.val, count);
+                }
+                container.appendChild(el);
+            });
+        }
+
+        function handleHandClick(kind_val, count) {
+            if (game.get_turn() !== playerTurn || game.get_winner() !== -1 || count === 0) return;
+            selectedCell = null;
+            selectedHand = kind_val;
+            updateUI();
+        }
+
+        function handleCellClick(sq, pieceChar) {
+            if (game.get_turn() !== playerTurn || game.get_winner() !== -1) return;
+            
+            const isMyPiece = playerTurn === 1 
+                ? pieceChar && pieceChar === pieceChar.toUpperCase()
+                : pieceChar && pieceChar === pieceChar.toLowerCase();
+
+            if (isMyPiece) {
+                selectedCell = sq;
+                selectedHand = null;
+                updateUI();
+                return;
+            }
+            
+            if (selectedCell !== null) {
+                game.apply_human_move(selectedCell, sq);
+                selectedCell = null;
+                updateUI();
+            } else if (selectedHand !== null) {
+                game.apply_human_drop(selectedHand, sq);
+                selectedHand = null;
+                updateUI();
+            }
+        }
+
+        function checkGameState() {
+            const status = game.get_winner();
+            const msgEl = document.getElementById('message');
+            
+            if (status === 1 || status === 2) {
+                if (status === playerTurn) {
+                    msgEl.innerHTML = "🎉 <span class='text-red-600'>あなたの勝ちです！</span>";
+                } else {
+                    msgEl.innerHTML = "💀 <span class='text-blue-600'>AIの勝ちです！</span>";
+                }
+                return;
+            } else if (status === 0) {
+                msgEl.innerHTML = "🤝 千日手（引き分け）です";
+                return;
+            }
+            
+            if (game.get_turn() === playerTurn) {
+                msgEl.innerHTML = "🐥 あなたの番です";
+            } else {
+                msgEl.innerHTML = "🐶 AIが思考中...";
+                if (!isAiThinking) {
+                    isAiThinking = true;
+                    // UIを描画してからAIの思考を実行させる
+                    setTimeout(aiTurn, 50);
+                }
+            }
+        }
+
+        function aiTurn() {
+            try {
+                // AIに1秒考えさせる
+                const moveStr = game.search_and_apply_move(1000n);
+                
+                if (moveStr === "投了") {
+                    document.getElementById('message').innerHTML = "🏳️ <span class='text-red-600'>AIが投了しました！あなたの勝ちです！</span>";
+                    isAiThinking = false;
+                    return;
+                }
+                console.log("AIの指し手:", moveStr);
+            } catch (e) {
+                console.error("AI思考中にパニックが発生しました:", e);
+                document.getElementById('message').innerHTML = "😵 <span class='text-blue-600'>AIがエラーで停止しました</span>";
+            }
+            
+            selectedCell = null;
+            selectedHand = null;
+            isAiThinking = false;
+            updateUI();
+        }
+
+        run();
+    </script>
+</body>
+</html>

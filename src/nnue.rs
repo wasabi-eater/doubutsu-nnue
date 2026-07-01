@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Result};
+use std::io::{Read, Result, Cursor};
 
 // --- 定数の定義 ---
 // train_nnue.py の定義と完全に一致させます
@@ -31,7 +31,16 @@ impl NnueWeights {
     // Python側でエクスポートした nnue_weights.bin を読み込む関数
     pub fn load_from_file(path: &str) -> Result<Self> {
         let mut file = File::open(path)?;
-        
+        Self::load_from_reader(&mut file)    
+    }
+
+    // WASM向け: メモリ上のバイト配列からロードするメソッド
+    pub fn load_from_slice(bytes: &[u8]) -> std::io::Result<Self> {
+        let mut cursor = Cursor::new(bytes);
+        Self::load_from_reader(&mut cursor)
+    }
+
+    pub fn load_from_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
         let mut weights = NnueWeights {
             feature_weights: [[0; HIDDEN_SIZE]; FEATURE_SIZE],
             feature_biases: [0; HIDDEN_SIZE],
@@ -43,7 +52,7 @@ impl NnueWeights {
         for feat_idx in 0..FEATURE_SIZE {
             for hid_idx in 0..HIDDEN_SIZE {
                 let mut buf = [0u8; 2];
-                file.read_exact(&mut buf)?;
+                reader.read_exact(&mut buf)?;
                 weights.feature_weights[feat_idx][hid_idx] = i16::from_le_bytes(buf);
             }
         }
@@ -51,20 +60,20 @@ impl NnueWeights {
         // 2. Feature -> Accumulator バイアス (i16)
         for hid_idx in 0..HIDDEN_SIZE {
             let mut buf = [0u8; 2];
-            file.read_exact(&mut buf)?;
+            reader.read_exact(&mut buf)?;
             weights.feature_biases[hid_idx] = i16::from_le_bytes(buf);
         }
 
         // 3. Accumulator -> Output 重み (i16)
         for hid_idx in 0..HIDDEN_SIZE {
             let mut buf = [0u8; 2];
-            file.read_exact(&mut buf)?;
+            reader.read_exact(&mut buf)?;
             weights.output_weights[hid_idx] = i16::from_le_bytes(buf);
         }
 
         // 4. Accumulator -> Output バイアス (i32)
         let mut buf = [0u8; 4];
-        file.read_exact(&mut buf)?;
+        reader.read_exact(&mut buf)?;
         weights.output_bias = i32::from_le_bytes(buf);
 
         Ok(weights)
