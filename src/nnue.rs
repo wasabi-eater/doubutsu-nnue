@@ -2,19 +2,18 @@ use std::fs::File;
 use std::io::{Read, Result, Cursor};
 
 // --- 定数の定義 ---
-// train_nnue.py の定義と完全に一致させます
 pub const FEATURE_SIZE: usize = 132;
 pub const HIDDEN_SIZE: usize = 128;
 
-// 量子化関連の定数
-pub const WEIGHT_SCALE_BITS: i32 = 6; // 2^6 = 64
-pub const ACTIVATION_MAX: i16 = 127;
+// ★ 修正: SCReLUに最適化したスケール定数
+pub const WEIGHT_SCALE_BITS: i32 = 7; // 2^7 = 128
+pub const ACTIVATION_MAX: i16 = 127;  // 127 を 1.0 とみなす
 
 // --- ネットワークの重み ---
 pub struct NnueWeights {
     pub feature_weights: [[i16; HIDDEN_SIZE]; FEATURE_SIZE],
     pub feature_biases: [i16; HIDDEN_SIZE],
-    pub output_weights: [i16; HIDDEN_SIZE],
+    pub output_weights: [i32; HIDDEN_SIZE],
     pub output_bias: i32,
 }
 
@@ -64,11 +63,11 @@ impl NnueWeights {
             weights.feature_biases[hid_idx] = i16::from_le_bytes(buf);
         }
 
-        // 3. Accumulator -> Output 重み (i16)
+        // 3. Accumulator -> Output 重み (i32に変更)
         for hid_idx in 0..HIDDEN_SIZE {
-            let mut buf = [0u8; 2];
+            let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
-            weights.output_weights[hid_idx] = i16::from_le_bytes(buf);
+            weights.output_weights[hid_idx] = i32::from_le_bytes(buf);
         }
 
         // 4. Accumulator -> Output バイアス (i32)
@@ -87,7 +86,6 @@ pub struct Accumulator {
 }
 
 impl Accumulator {
-    // 探索の開始時 (ルートノード) でゼロから計算する場合
     pub fn refresh(weights: &NnueWeights, active_features: &[usize]) -> Self {
         let mut acc = Accumulator {
             values: weights.feature_biases,
@@ -100,7 +98,6 @@ impl Accumulator {
         acc
     }
 
-    // ★ make_move で取得した FeatureUpdate を使った差分更新 ★
     pub fn update(&mut self, weights: &NnueWeights, added: &[usize], removed: &[usize]) {
         for &feature_idx in removed {
             for i in 0..HIDDEN_SIZE {
@@ -116,17 +113,28 @@ impl Accumulator {
 
     // アキュムレータの値から最終的な評価値を計算
     pub fn evaluate(&self, weights: &NnueWeights) -> i32 {
-        let mut sum: i32 = weights.output_bias;
+        // オーバーフローを防ぐため、一時的に i64 で計算する
+        let mut sum: i64 = 0;
         
         for i in 0..HIDDEN_SIZE {
-            // Clipped ReLU
-            let activation = self.values[i].clamp(0, ACTIVATION_MAX) as i32;
-            sum += activation * (weights.output_weights[i] as i32);
+            // 1. Clipped ReLU (0 ~ 127 に収める)
+            let activation = self.values[i].clamp(0, ACTIVATION_MAX) as i64;
+            
+            // 2. SCReLU: 活性化値を2乗する
+            let squared_activation = activation * activation;
+            
+            // 3. 重みと掛け合わせて足す
+            sum += squared_activation * (weights.output_weights[i] as i64);
         }
         
-        // スケールを戻す (ビットシフト)
-        sum >>= WEIGHT_SCALE_BITS;
+        // この時点でスケールは (2^7)^2 * (2^7) = 2^21 倍に膨れ上がっている。
+        // バイアスのスケール(2^7倍)と足し算できるように、一旦 2^14 (WEIGHT_SCALE_BITS * 2) で割る
+        sum >>= WEIGHT_SCALE_BITS * 2;
         
-        sum
+        // スケールが 2^7 に揃ったので、ここで安全にバイアスを足す
+        sum += weights.output_bias as i64;
+        
+        // 最後に残りの 2^7 で割って、元のスコアスケールに戻す
+        (sum >> WEIGHT_SCALE_BITS) as i32
     }
 }
