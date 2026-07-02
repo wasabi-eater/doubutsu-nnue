@@ -27,6 +27,7 @@ struct Search<'zt, 'tt, 'nw> {
     nodes: usize,
     history: Vec<(u64, Board)>,
     killer_moves: [[Option<Move>; 2]; MAX_PLY],
+    aborted: bool, // ★追加: タイムアウトを検知するフラグ
 }
 
 // 駒の価値 (Move Ordering用)
@@ -73,13 +74,13 @@ pub fn search_best_move(
             start_time,
             history: game_history.to_vec(),
             killer_moves: [[None; 2]; MAX_PLY],
+            aborted: false, // 初期化時はfalse
         };
 
         let score = search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
 
-        let nodes_searched = search.nodes;
-
-        if start_time.elapsed() >= limits.max_time {
+        // タイムアウト(aborted)が発生した場合は、その深さの不完全な結果を完全に破棄する
+        if search.aborted {
             println!("時間切れのため、深さ {} の探索を中断しました。", depth);
             if depth > 1 {
                 reached_depth = depth - 1;
@@ -87,11 +88,14 @@ pub fn search_best_move(
             break;
         }
 
+        let nodes_searched = search.nodes;
+
+        // abortedしていない(完全に探索が終わった)時のみ、最善手を更新する
         if let Some(entry) = tt.probe(current_hash) {
             best_move = entry.best_move;
             best_score = score;
         }
-        
+
         reached_depth = depth;
 
         println!(
@@ -107,11 +111,18 @@ pub fn search_best_move(
             break;
         }
     }
-    
+
     (best_move, reached_depth)
 }
 
 impl Search<'_, '_, '_> {
+    // タイムアウトをチェックし、超過していればフラグを立てる
+    fn check_time(&mut self) {
+        if self.nodes & 2047 == 0 && self.start_time.elapsed() >= self.max_time {
+            self.aborted = true;
+        }
+    }
+
     fn is_repetition(&self, current_hash: u64, current_board: &Board) -> bool {
         let len = self.history.len();
         if len >= 2 {
@@ -139,6 +150,9 @@ impl Search<'_, '_, '_> {
         current_hash: u64,
         q_depth: i8,
     ) -> i32 {
+        if self.aborted {
+            return 0;
+        }
         self.nodes += 1;
 
         if let Some(winner) = board.winner() {
@@ -153,7 +167,8 @@ impl Search<'_, '_, '_> {
             return 0;
         }
 
-        if self.nodes & 2047 == 0 && self.start_time.elapsed() >= self.max_time {
+        self.check_time();
+        if self.aborted {
             return 0;
         }
 
@@ -227,6 +242,11 @@ impl Search<'_, '_, '_> {
                 q_depth - 1,
             );
 
+            if self.aborted {
+                self.history.pop();
+                return 0;
+            }
+
             if score >= beta {
                 self.history.pop();
                 return score;
@@ -250,6 +270,9 @@ impl Search<'_, '_, '_> {
         current_acc: &Accumulator,
         current_hash: u64,
     ) -> i32 {
+        if self.aborted {
+            return 0;
+        }
         self.nodes += 1;
         let alpha_orig = alpha;
 
@@ -269,11 +292,11 @@ impl Search<'_, '_, '_> {
             return self.search_q(board, ply, alpha, beta, current_acc, current_hash, 0);
         }
 
-        if self.nodes & 2047 == 0 && self.start_time.elapsed() >= self.max_time {
+        self.check_time();
+        if self.aborted {
             return 0;
         }
 
-        // 置換表 (TT) による枝刈り
         let mut tt_move = None;
         if let Some(entry) = self.tt.probe(current_hash) {
             tt_move = Some(entry.best_move);
@@ -307,7 +330,7 @@ impl Search<'_, '_, '_> {
 
         let opponent = board.side_to_move.opponent();
         let opponent_occupied = board.occupied_by(opponent);
-        
+
         moves.sort_by_cached_key(|&m| {
             if Some(m) == tt_move {
                 return i32::MAX;
@@ -318,7 +341,7 @@ impl Search<'_, '_, '_> {
                 let to_bit = 1 << m.sq_to();
                 if (opponent_occupied & to_bit) != 0 {
                     move_score += 10000 - piece_value(m.piece_kind());
-                    return move_score; 
+                    return move_score;
                 }
                 if m.is_promote() {
                     move_score += 5000;
@@ -330,9 +353,9 @@ impl Search<'_, '_, '_> {
             // 駒を取る手や成る手ではない「静かな手」の場合、過去にベータカットに成功したキラー手なら優先
             if ply < MAX_PLY {
                 if Some(m) == self.killer_moves[ply][0] {
-                    return 900; // プライマリキラー
+                    return 900;
                 } else if Some(m) == self.killer_moves[ply][1] {
-                    return 800; // セカンダリキラー
+                    return 800;
                 }
             }
 
@@ -377,6 +400,10 @@ impl Search<'_, '_, '_> {
                     &next_acc,
                     next_hash,
                 );
+                if self.aborted {
+                    self.history.pop();
+                    return 0;
+                }
                 if null_score > alpha && null_score < beta {
                     score = -self.search_pvs(
                         &next_board,
@@ -392,6 +419,12 @@ impl Search<'_, '_, '_> {
                 }
             }
 
+            // 子ノードの探索中にタイムアウトが起きたら、現在のスコアを信用せず直ちに破棄する
+            if self.aborted {
+                self.history.pop();
+                return 0;
+            }
+
             if score > best_score {
                 best_score = score;
                 best_move = m;
@@ -399,14 +432,10 @@ impl Search<'_, '_, '_> {
                     alpha = score;
                 }
                 if alpha >= beta {
-                    // ベータカット(枝刈り)発生時に、それが静かな手ならキラー手として記録
                     let is_capture = !m.is_drop() && (opponent_occupied & (1 << m.sq_to())) != 0;
-                    if !is_capture && ply < MAX_PLY {
-                        // 既にプライマリキラーに登録されている手でなければ、ずらして登録
-                        if self.killer_moves[ply][0] != Some(m) {
-                            self.killer_moves[ply][1] = self.killer_moves[ply][0];
-                            self.killer_moves[ply][0] = Some(m);
-                        }
+                    if !is_capture && ply < MAX_PLY && self.killer_moves[ply][0] != Some(m) {
+                        self.killer_moves[ply][1] = self.killer_moves[ply][0];
+                        self.killer_moves[ply][0] = Some(m);
                     }
                     break;
                 }
@@ -415,30 +444,31 @@ impl Search<'_, '_, '_> {
 
         self.history.pop();
 
-        let node_type = if best_score <= alpha_orig {
-            UPPER_BOUND
-        } else if best_score >= beta {
-            LOWER_BOUND
-        } else {
-            EXACT
-        };
+        if !self.aborted {
+            let node_type = if best_score <= alpha_orig {
+                UPPER_BOUND
+            } else if best_score >= beta {
+                LOWER_BOUND
+            } else {
+                EXACT
+            };
 
-        // 置換表(TT)に詰みスコアを保存する前の補正 (ルートからの絶対手数への変換)
-        let mut tt_score = best_score;
-        if tt_score > 19000 {
-            tt_score += ply as i32;
-        } else if tt_score < -19000 {
-            tt_score -= ply as i32;
-        }
+            let mut tt_score = best_score;
+            if tt_score > 19000 {
+                tt_score += ply as i32;
+            } else if tt_score < -19000 {
+                tt_score -= ply as i32;
+            }
 
-        if tt_score != 0 {
-            self.tt.store(TTEntry {
-                key: current_hash,
-                depth,
-                score: tt_score,
-                best_move,
-                node_type,
-            });
+            if tt_score != 0 {
+                self.tt.store(TTEntry {
+                    key: current_hash,
+                    depth,
+                    score: tt_score,
+                    best_move,
+                    node_type,
+                });
+            }
         }
 
         best_score
