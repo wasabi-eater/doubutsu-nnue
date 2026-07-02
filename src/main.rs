@@ -153,7 +153,7 @@ fn play_vs_human(
         } else {
             println!("\nAIが思考中...");
             // ★追加: 探索関数に履歴を渡す
-            search_best_move(&board, z_table, tt, weights, &limits, &game_history)
+            search_best_move(&board, z_table, tt, weights, &limits, &game_history).0
         };
 
         if board.side_to_move != human_player {
@@ -237,7 +237,7 @@ fn generate_training_data(
                 moves[random_idx]
             } else {
                 // ★追加: 履歴を渡す
-                search_best_move(&board, z_table, tt, weights, &limits, &game_history)
+                search_best_move(&board, z_table, tt, weights, &limits, &game_history).0
             };
 
             game_history.push((current_hash, board.clone()));

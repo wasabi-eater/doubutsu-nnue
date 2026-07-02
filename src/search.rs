@@ -36,6 +36,7 @@ fn piece_value(kind: PieceKind) -> i32 {
     }
 }
 
+// ★修正: 戻り値を Move だけでなく、到達深さ u8 を含めたタプル (Move, u8) に変更
 pub fn search_best_move(
     board: &Board,
     z_table: &ZobristTable,
@@ -43,16 +44,15 @@ pub fn search_best_move(
     nnue_weights: &NnueWeights,
     limits: &SearchLimits,
     game_history: &[(u64, Board)],
-) -> Move {
+) -> (Move, u8) {
     let start_time = Instant::now();
 
-    // ★フェイルセーフ: 万が一探索が手を選べなかった場合でも盤面が壊れないよう、
-    // 未定義のMove(0)ではなく、合法手のどれかをデフォルトに設定しておく
     let mut moves = Vec::new();
     generate_moves(board, &mut moves);
     let mut best_move = moves.first().copied().unwrap_or(Move(0));
 
     let mut best_score = 0;
+    let mut reached_depth = 0; // ★追加: 完了した深さを記録する変数
 
     // 1. ルートノードでの初期計算
     let current_hash = board.compute_initial_hash(z_table);
@@ -77,6 +77,9 @@ pub fn search_best_move(
 
         if start_time.elapsed() >= limits.max_time {
             println!("時間切れのため、深さ {} の探索を中断しました。", depth);
+            if depth > 1 {
+                reached_depth = depth - 1; // 途中で時間切れになった場合は1つ前の深さを記録
+            }
             break;
         }
 
@@ -84,6 +87,8 @@ pub fn search_best_move(
             best_move = entry.best_move;
             best_score = score;
         }
+        
+        reached_depth = depth; // この深さの探索は完了した
 
         println!(
             "info depth {} score {} nodes {} time {}ms pv ...",
@@ -93,13 +98,14 @@ pub fn search_best_move(
             start_time.elapsed().as_millis()
         );
 
-        // 詰みスコア(19000以上)を発見したら探索を打ち切って直ちにその手を指す
         if best_score.abs() >= 19000 {
             println!("詰みを発見したので探索を終了します");
             break;
         }
     }
-    best_move
+    
+    // ★修正: 最善手と到達深さの両方を返す
+    (best_move, reached_depth)
 }
 
 impl Search<'_, '_, '_> {
@@ -132,7 +138,6 @@ impl Search<'_, '_, '_> {
     ) -> i32 {
         self.nodes += 1;
 
-        // 終局判定
         if let Some(winner) = board.winner() {
             return if winner == board.side_to_move {
                 20000 - ply as i32
@@ -184,18 +189,16 @@ impl Search<'_, '_, '_> {
             })
             .collect();
 
-        // ★ 静止探索での Move Ordering (取る手を強力に優先)
         noisy_moves.sort_by_cached_key(|&m| {
             let mut move_score = 0;
             let to_bit = 1 << m.sq_to();
             if (opponent_occupied & to_bit) != 0 {
-                // MVV-LVA: 取れる駒の価値が高く、取る側の駒の価値が低いほど優先
                 move_score += 10000 - piece_value(m.piece_kind());
             }
             if m.is_promote() {
                 move_score += 5000;
             }
-            -move_score // 降順ソート
+            -move_score 
         });
 
         self.history.push((current_hash, board.clone()));
@@ -248,7 +251,6 @@ impl Search<'_, '_, '_> {
         let alpha_orig = alpha;
 
         if let Some(winner) = board.winner() {
-            // ★ 修正1: 詰みスコアの算出を depth から ply (手数) 基準に変更
             return if winner == board.side_to_move {
                 20000 - ply as i32
             } else {
@@ -268,21 +270,17 @@ impl Search<'_, '_, '_> {
             return 0;
         }
 
-        // ★ 置換表 (TT) による枝刈りの完全実装
         let mut tt_move = None;
         if let Some(entry) = self.tt.probe(current_hash) {
             tt_move = Some(entry.best_move);
             if entry.depth >= depth {
                 let mut score = entry.score;
-                // ★ 修正2: TTから取り出した詰みスコアを、現在のノードからの相対スコアに復元する
                 if score > 19000 {
                     score -= ply as i32;
                 } else if score < -19000 {
                     score += ply as i32;
                 }
 
-                // ★ GHI対策: 置換表のスコアが 0（引き分け）の場合は、
-                // 履歴に依存した「千日手スコア」である可能性が高いため、置換表を信用せず再計算する
                 if score != 0 {
                     if entry.node_type == EXACT {
                         return score;
@@ -398,7 +396,6 @@ impl Search<'_, '_, '_> {
             EXACT
         };
 
-        // 置換表(TT)に詰みスコアを保存する前の補正 (ルートからの絶対手数への変換)
         let mut tt_score = best_score;
         if tt_score > 19000 {
             tt_score += ply as i32;
@@ -406,8 +403,6 @@ impl Search<'_, '_, '_> {
             tt_score -= ply as i32;
         }
 
-        // ★ GHI対策: 今回の探索結果が 0点（引き分け）だった場合は、
-        // 履歴に依存したスコアである可能性が高いため、置換表には保存しない
         if tt_score != 0 {
             self.tt.store(TTEntry {
                 key: current_hash,

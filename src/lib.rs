@@ -10,9 +10,9 @@ mod search;
 mod zobrist;
 
 use board::{Board, PieceKind, Player};
-use move_gen::{generate_moves, Move};
+use move_gen::{Move, generate_moves};
 use nnue::NnueWeights;
-use search::{search_best_move, SearchLimits};
+use search::{SearchLimits, search_best_move};
 use zobrist::{TranspositionTable, ZobristTable};
 
 // --- ヘルパー関数: 指し手を人間が読める文字列に変換 ---
@@ -23,7 +23,6 @@ fn sq_to_string(sq: u8) -> String {
 }
 
 fn move_to_string(m: Move) -> String {
-    // 16ビットにパックされた情報を手動で抽出
     let from_sq = (m.0 & 0x0F) as u8;
     let to_sq = ((m.0 >> 4) & 0x0F) as u8;
     let kind_val = (m.0 >> 8) & 0x07;
@@ -74,14 +73,11 @@ impl AnimalShogiWasm {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         let z_table = ZobristTable::new();
-        // ブラウザ向けにメモリを節約 (約100万エントリ -> 50万エントリ程度)
         let tt = TranspositionTable::new(1024 * 512);
 
-        // ★ コンパイル時に重みファイルをWASMバイナリに直接埋め込む魔法のマクロ ★
-        // nnue_weights.bin はプロジェクトのルート (srcの外) に配置してください
-        let weight_bytes = include_bytes!("../nnue_weights.bin");
-        let weights = NnueWeights::load_from_slice(weight_bytes)
-            .unwrap_or_else(|_| NnueWeights::new_dummy());
+        let weight_bytes = include_bytes!("../checkpoints4/nnue_weights_gen200.bin");
+        let weights =
+            NnueWeights::load_from_slice(weight_bytes).unwrap_or_else(|_| NnueWeights::new_dummy());
 
         Self {
             board: Board::initial_position(),
@@ -96,25 +92,28 @@ impl AnimalShogiWasm {
     pub fn reset(&mut self) {
         self.board = Board::initial_position();
         self.history.clear();
-        self.tt = TranspositionTable::new(1024 * 512); // 置換表もクリア
+        self.tt = TranspositionTable::new(1024 * 512);
     }
 
-        // --- 🤖 AIの行動 ---
+    // --- 🤖 AIの行動 ---
+    // AIに思考させて、選んだ手と到達した探索深さをJSON文字列で返す
     pub fn search_and_apply_move(&mut self, time_limit_ms: u64) -> String {
-        // 事前に合法手があるかチェックし、0手(詰み)なら不正な手を指さずに投了する
         let mut moves = Vec::new();
         generate_moves(&self.board, &mut moves);
         if moves.is_empty() {
-            return "投了".to_string();
+            // 合法手がない場合は投了のJSONを返す
+            return r#"{"move_text": "投了", "depth": 0}"#.to_string();
         }
 
         let limits = SearchLimits {
             max_time: Duration::from_millis(time_limit_ms),
-            max_depth: 32, // 深さは実質無制限にして時間で区切る
+            max_depth: 32,
         };
 
         let current_hash = self.board.compute_initial_hash(&self.z_table);
-        let best_move = search_best_move(
+
+        // ★修正: 最善手と到達深さをタプルで受け取る
+        let (best_move, depth) = search_best_move(
             &self.board,
             &self.z_table,
             &mut self.tt,
@@ -123,22 +122,18 @@ impl AnimalShogiWasm {
             &self.history,
         );
 
-        // 履歴を更新して手を適用
         self.history.push((current_hash, self.board.clone()));
         self.board.make_move(best_move, &self.z_table, current_hash);
 
-        move_to_string(best_move)
+        let move_str = move_to_string(best_move);
+        format!(r#"{{"move_text": "{}", "depth": {}}}"#, move_str, depth)
     }
 
-
     // --- 👤 人間の行動 ---
-    // UIからの入力 (盤上の駒を移動する) を適用する
-    // from_sq, to_sq は 0~11 のインデックス (左上A1が0)
     pub fn apply_human_move(&mut self, from_sq: u8, to_sq: u8) -> bool {
         let mut moves = Vec::new();
         generate_moves(&self.board, &mut moves);
 
-        // 入力されたマスと一致する合法手を探す
         for m in moves {
             let m_from = (m.0 & 0x0F) as u8;
             let m_to = ((m.0 >> 4) & 0x0F) as u8;
@@ -148,14 +143,12 @@ impl AnimalShogiWasm {
                 let current_hash = self.board.compute_initial_hash(&self.z_table);
                 self.history.push((current_hash, self.board.clone()));
                 self.board.make_move(m, &self.z_table, current_hash);
-                return true; // 適用成功
+                return true;
             }
         }
-        false // 非合法手
+        false
     }
 
-    // UIからの入力 (持ち駒を打つ) を適用する
-    // kind_val: 0:Lion, 1:Giraffe, 2:Elephant, 3:Chick, 4:Hen
     pub fn apply_human_drop(&mut self, kind_val: u8, to_sq: u8) -> bool {
         let mut moves = Vec::new();
         generate_moves(&self.board, &mut moves);
@@ -169,19 +162,17 @@ impl AnimalShogiWasm {
                 let current_hash = self.board.compute_initial_hash(&self.z_table);
                 self.history.push((current_hash, self.board.clone()));
                 self.board.make_move(m, &self.z_table, current_hash);
-                return true; // 適用成功
+                return true;
             }
         }
-        false // 非合法手
+        false
     }
 
     // --- 🎮 状態の取得 ---
-    // 勝敗状態を取得する。 -1: 進行中, 0: 引き分け(千日手), 1: 先手勝ち, 2: 後手勝ち
     pub fn get_winner(&self) -> i32 {
         if let Some(winner) = self.board.winner() {
             if winner == Player::Sente { 1 } else { 2 }
         } else {
-            // 千日手判定
             let current_hash = self.board.compute_initial_hash(&self.z_table);
             let count = self
                 .history
@@ -192,22 +183,20 @@ impl AnimalShogiWasm {
                 return 0; // 引き分け
             }
 
-            // ★ 修正: 合法手がゼロ（ステイルメイト・詰み）なら手番側の負け！
             let mut moves = Vec::new();
             generate_moves(&self.board, &mut moves);
             if moves.is_empty() {
                 if self.board.side_to_move == Player::Sente {
-                    return 2; // 先手が動けない -> 後手(AI)の勝ち
+                    return 2;
                 } else {
-                    return 1; // 後手が動けない -> 先手(あなた)の勝ち
+                    return 1;
                 }
             }
 
-            -1 // まだ勝負がついていない
+            -1 // 進行中
         }
     }
 
-    // 現在の手番が先手(1)か後手(2)かを返す
     pub fn get_turn(&self) -> i32 {
         if self.board.side_to_move == Player::Sente {
             1
@@ -216,7 +205,6 @@ impl AnimalShogiWasm {
         }
     }
 
-    // JS側で盤面を描画・デバッグするために、盤面をアスキーアートの文字列として返す
     pub fn get_board_string(&self) -> String {
         let mut s = String::new();
         let piece_str = |p: Player, k: PieceKind| -> &'static str {
@@ -236,9 +224,7 @@ impl AnimalShogiWasm {
 
         s.push_str(&format!(
             "後手持駒: ひよこ{}, きりん{}, ぞう{}\n",
-            self.board.hands[1].chicks,
-            self.board.hands[1].giraffes,
-            self.board.hands[1].elephants
+            self.board.hands[1].chicks, self.board.hands[1].giraffes, self.board.hands[1].elephants
         ));
         s.push_str("  A  B  C\n");
         for y in 0..4 {
@@ -274,9 +260,7 @@ impl AnimalShogiWasm {
         }
         s.push_str(&format!(
             "先手持駒: ひよこ{}, きりん{}, ぞう{}\n",
-            self.board.hands[0].chicks,
-            self.board.hands[0].giraffes,
-            self.board.hands[0].elephants
+            self.board.hands[0].chicks, self.board.hands[0].giraffes, self.board.hands[0].elephants
         ));
 
         s

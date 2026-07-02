@@ -67,6 +67,8 @@
                 <button id="reset-btn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-6 rounded-full shadow transition-colors w-full max-w-[200px]">
                     🔄 はじめから
                 </button>
+                
+                <div id="depth-info" class="text-sm font-bold text-gray-400 mt-[-0.5rem] h-5"></div>
             </div>
         </main>
     </div>
@@ -121,6 +123,7 @@
                 selectedCell = null;
                 selectedHand = null;
                 isAiThinking = false;
+                document.getElementById('depth-info').innerText = '';
                 updateUI();
             }
         }
@@ -289,7 +292,6 @@
                 msgEl.innerHTML = "🐶 AIが思考中...";
                 if (!isAiThinking) {
                     isAiThinking = true;
-                    // UIを描画してからAIの思考を実行させる
                     setTimeout(aiTurn, 50);
                 }
             }
@@ -298,16 +300,25 @@
         function aiTurn() {
             try {
                 // AIに1秒考えさせる
-                const moveStr = game.search_and_apply_move(1000n);
+                const jsonStr = game.search_and_apply_move(1000n);
+                
+                const result = JSON.parse(jsonStr);
+                const moveStr = result.move_text;
+                const depth = result.depth;
                 
                 if (moveStr === "投了") {
                     document.getElementById('message').innerHTML = "🏳️ <span class='text-red-600'>AIが投了しました！あなたの勝ちです！</span>";
                     isAiThinking = false;
                     return;
                 }
-                console.log("AIの指し手:", moveStr);
+                
+                console.log(`AIの指し手: ${moveStr} (深さ: ${depth})`);
+                
+                // ★追加: UIに探索深さを表示
+                document.getElementById('depth-info').innerText = `AIの探索深さ: ${depth} 手先`;
+                
             } catch (e) {
-                console.error("AI思考中にパニックが発生しました:", e);
+                console.error("AI思考中にエラーが発生しました:", e);
                 document.getElementById('message').innerHTML = "😵 <span class='text-blue-600'>AIがエラーで停止しました</span>";
             }
             
