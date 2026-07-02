@@ -281,14 +281,18 @@ impl Search<'_, '_, '_> {
                     score += ply as i32;
                 }
 
-                if entry.node_type == EXACT {
-                    return score;
-                }
-                if entry.node_type == LOWER_BOUND && score >= beta {
-                    return score;
-                }
-                if entry.node_type == UPPER_BOUND && score <= alpha {
-                    return score;
+                // ★ GHI対策: 置換表のスコアが 0（引き分け）の場合は、
+                // 履歴に依存した「千日手スコア」である可能性が高いため、置換表を信用せず再計算する
+                if score != 0 {
+                    if entry.node_type == EXACT {
+                        return score;
+                    }
+                    if entry.node_type == LOWER_BOUND && score >= beta {
+                        return score;
+                    }
+                    if entry.node_type == UPPER_BOUND && score <= alpha {
+                        return score;
+                    }
                 }
             }
         }
@@ -297,7 +301,7 @@ impl Search<'_, '_, '_> {
         generate_moves(board, &mut moves);
         if moves.is_empty() {
             return -20000 + ply as i32;
-        } // ★ここも ply に修正
+        }
 
         let opponent = board.side_to_move.opponent();
         let opponent_occupied = board.occupied_by(opponent);
@@ -402,13 +406,17 @@ impl Search<'_, '_, '_> {
             tt_score -= ply as i32;
         }
 
-        self.tt.store(TTEntry {
-            key: current_hash,
-            depth,
-            score: tt_score,
-            best_move,
-            node_type,
-        });
+        // ★ GHI対策: 今回の探索結果が 0点（引き分け）だった場合は、
+        // 履歴に依存したスコアである可能性が高いため、置換表には保存しない
+        if tt_score != 0 {
+            self.tt.store(TTEntry {
+                key: current_hash,
+                depth,
+                score: tt_score,
+                best_move,
+                node_type,
+            });
+        }
 
         best_score
     }
