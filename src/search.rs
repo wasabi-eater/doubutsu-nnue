@@ -10,6 +10,9 @@ const EXACT: u8 = 0;
 const LOWER_BOUND: u8 = 1;
 const UPPER_BOUND: u8 = 2;
 
+// 探索の最大深さ (キラー手の配列サイズ用)
+const MAX_PLY: usize = 64;
+
 pub struct SearchLimits {
     pub max_time: Duration,
     pub max_depth: u8,
@@ -23,6 +26,7 @@ struct Search<'zt, 'tt, 'nw> {
     max_time: Duration,
     nodes: usize,
     history: Vec<(u64, Board)>,
+    killer_moves: [[Option<Move>; 2]; MAX_PLY],
 }
 
 // 駒の価値 (Move Ordering用)
@@ -36,7 +40,6 @@ fn piece_value(kind: PieceKind) -> i32 {
     }
 }
 
-// ★修正: 戻り値を Move だけでなく、到達深さ u8 を含めたタプル (Move, u8) に変更
 pub fn search_best_move(
     board: &Board,
     z_table: &ZobristTable,
@@ -52,7 +55,7 @@ pub fn search_best_move(
     let mut best_move = moves.first().copied().unwrap_or(Move(0));
 
     let mut best_score = 0;
-    let mut reached_depth = 0; // ★追加: 完了した深さを記録する変数
+    let mut reached_depth = 0;
 
     // 1. ルートノードでの初期計算
     let current_hash = board.compute_initial_hash(z_table);
@@ -69,6 +72,7 @@ pub fn search_best_move(
             nodes: 0,
             start_time,
             history: game_history.to_vec(),
+            killer_moves: [[None; 2]; MAX_PLY],
         };
 
         let score = search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
@@ -78,7 +82,7 @@ pub fn search_best_move(
         if start_time.elapsed() >= limits.max_time {
             println!("時間切れのため、深さ {} の探索を中断しました。", depth);
             if depth > 1 {
-                reached_depth = depth - 1; // 途中で時間切れになった場合は1つ前の深さを記録
+                reached_depth = depth - 1;
             }
             break;
         }
@@ -88,7 +92,7 @@ pub fn search_best_move(
             best_score = score;
         }
         
-        reached_depth = depth; // この深さの探索は完了した
+        reached_depth = depth;
 
         println!(
             "info depth {} score {} nodes {} time {}ms pv ...",
@@ -104,7 +108,6 @@ pub fn search_best_move(
         }
     }
     
-    // ★修正: 最善手と到達深さの両方を返す
     (best_move, reached_depth)
 }
 
@@ -198,7 +201,7 @@ impl Search<'_, '_, '_> {
             if m.is_promote() {
                 move_score += 5000;
             }
-            -move_score 
+            -move_score
         });
 
         self.history.push((current_hash, board.clone()));
@@ -270,6 +273,7 @@ impl Search<'_, '_, '_> {
             return 0;
         }
 
+        // 置換表 (TT) による枝刈り
         let mut tt_move = None;
         if let Some(entry) = self.tt.probe(current_hash) {
             tt_move = Some(entry.best_move);
@@ -303,6 +307,7 @@ impl Search<'_, '_, '_> {
 
         let opponent = board.side_to_move.opponent();
         let opponent_occupied = board.occupied_by(opponent);
+        
         moves.sort_by_cached_key(|&m| {
             if Some(m) == tt_move {
                 return i32::MAX;
@@ -313,12 +318,25 @@ impl Search<'_, '_, '_> {
                 let to_bit = 1 << m.sq_to();
                 if (opponent_occupied & to_bit) != 0 {
                     move_score += 10000 - piece_value(m.piece_kind());
+                    return move_score; 
                 }
                 if m.is_promote() {
                     move_score += 5000;
+                    return move_score;
                 }
             }
-            -move_score
+
+            // キラー・ヒューリスティック
+            // 駒を取る手や成る手ではない「静かな手」の場合、過去にベータカットに成功したキラー手なら優先
+            if ply < MAX_PLY {
+                if Some(m) == self.killer_moves[ply][0] {
+                    return 900; // プライマリキラー
+                } else if Some(m) == self.killer_moves[ply][1] {
+                    return 800; // セカンダリキラー
+                }
+            }
+
+            move_score
         });
 
         let mut best_score = -30000;
@@ -381,6 +399,15 @@ impl Search<'_, '_, '_> {
                     alpha = score;
                 }
                 if alpha >= beta {
+                    // ベータカット(枝刈り)発生時に、それが静かな手ならキラー手として記録
+                    let is_capture = !m.is_drop() && (opponent_occupied & (1 << m.sq_to())) != 0;
+                    if !is_capture && ply < MAX_PLY {
+                        // 既にプライマリキラーに登録されている手でなければ、ずらして登録
+                        if self.killer_moves[ply][0] != Some(m) {
+                            self.killer_moves[ply][1] = self.killer_moves[ply][0];
+                            self.killer_moves[ply][0] = Some(m);
+                        }
+                    }
                     break;
                 }
             }
@@ -396,6 +423,7 @@ impl Search<'_, '_, '_> {
             EXACT
         };
 
+        // 置換表(TT)に詰みスコアを保存する前の補正 (ルートからの絶対手数への変換)
         let mut tt_score = best_score;
         if tt_score > 19000 {
             tt_score += ply as i32;
