@@ -3,6 +3,11 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+// ★並列化のためのモジュールをインポート
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
 mod board;
 mod make_move;
 mod move_gen;
@@ -26,13 +31,18 @@ struct XorShift64 {
 }
 
 impl XorShift64 {
-    fn new() -> Self {
-        let seed = SystemTime::now()
+    fn new(id: u64) -> Self {
+        let time_seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
+
+        // 時刻に加えて、IDに大きな素数(黄金比)を掛けたものをXORで混ぜ合わせる
+        let seed = time_seed ^ (id.wrapping_mul(0x9E3779B97F4A7C15));
+
         Self { state: seed.max(1) }
     }
+
     fn next(&mut self) -> u64 {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
@@ -53,7 +63,7 @@ fn main() {
     } else {
         println!("=== 🦁 どうぶつ将棋AI 🐥 ===");
         println!("モードを選択してください:");
-        println!("1: 学習データ生成 (AI同士の自動対局を100回行う)");
+        println!("1: 学習データ生成 (AI同士の自動対局を100回並列で行う)");
         println!("2: 対人戦 (あなた: 先手 🐥 vs AI: 後手 🐶)");
         println!("3: 対人戦 (AI: 先手 🐥 vs あなた: 後手 🐶)");
         print!("> ");
@@ -66,7 +76,6 @@ fn main() {
     }
 
     let z_table = ZobristTable::new();
-    let mut tt = TranspositionTable::new(1024 * 1024);
     let nnue_weights = NnueWeights::load_from_file("nnue_weights.bin").unwrap_or_else(|_| {
         if mode != 1 {
             println!("⚠️ 学習済みの重みが見つからないため、AIはランダムに動きます！");
@@ -75,9 +84,15 @@ fn main() {
     });
 
     match mode {
-        1 => generate_training_data(&z_table, &mut tt, &nnue_weights),
-        2 => play_vs_human(&z_table, &mut tt, &nnue_weights, Player::Sente),
-        3 => play_vs_human(&z_table, &mut tt, &nnue_weights, Player::Gote),
+        1 => generate_training_data(&z_table, &nnue_weights),
+        2 => {
+            let mut tt = TranspositionTable::new(1024 * 1024);
+            play_vs_human(&z_table, &mut tt, &nnue_weights, Player::Sente)
+        }
+        3 => {
+            let mut tt = TranspositionTable::new(1024 * 1024);
+            play_vs_human(&z_table, &mut tt, &nnue_weights, Player::Gote)
+        }
         _ => println!("不正な入力です。終了します。"),
     }
 }
@@ -98,7 +113,7 @@ fn play_vs_human(
     println!("\n対局を開始します！");
 
     let mut turn_count = 1;
-    let mut game_history: Vec<(u64, Board)> = Vec::new(); // ★変更: 実際のゲーム履歴
+    let mut game_history: Vec<(u64, Board)> = Vec::new();
 
     loop {
         println!("\n====================================");
@@ -107,13 +122,11 @@ fn play_vs_human(
 
         let current_hash = board.compute_initial_hash(z_table);
 
-        // ★追加: 実際の対局における千日手判定 (3回現れたら引き分け)
         let count = game_history
             .iter()
             .filter(|&&(h, ref b)| h == current_hash && *b == board)
             .count();
         if count >= 2 {
-            // 今回で3回目
             println!("\n====================================");
             println!("千日手が成立しました。引き分けです！");
             break;
@@ -152,7 +165,6 @@ fn play_vs_human(
             }
         } else {
             println!("\nAIが思考中...");
-            // ★追加: 探索関数に履歴を渡す
             search_best_move(&board, z_table, tt, weights, &limits, &game_history).0
         };
 
@@ -162,7 +174,7 @@ fn play_vs_human(
             println!("👤 あなたの指し手: {}", move_to_string(best_move));
         }
 
-        game_history.push((current_hash, board.clone())); // 履歴に追加
+        game_history.push((current_hash, board.clone()));
         board.make_move(best_move, z_table, current_hash);
 
         if let Some(w) = board.winner() {
@@ -184,28 +196,39 @@ fn play_vs_human(
     }
 }
 
-// --- 💾 学習データ生成モード ---
-fn generate_training_data(
-    z_table: &ZobristTable,
-    tt: &mut TranspositionTable,
-    weights: &NnueWeights,
-) {
-    let limits = SearchLimits {
-        max_time: Duration::from_millis(50),
-        max_depth: 11,
-    };
-    let mut rng = XorShift64::new();
+// --- 💾 学習データ生成モード (並列化対応) ---
+fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
+    let num_games = 100;
+    println!("学習データの生成を開始します (全 {} ゲーム)...", num_games);
 
-    println!("学習データの生成を開始します...");
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("training_data.csv")
+        .expect("ファイルを開けませんでした");
+    let file_mutex = Arc::new(Mutex::new(file));
 
-    for game_id in 1..=100 {
+    let completed_games = Arc::new(AtomicUsize::new(0));
+
+    // ★修正: アンダーバー (_) ではなく、ゲームID (game_id) を引数として受け取る
+    (1..=num_games).into_par_iter().for_each(|game_id| {
         let mut board = Board::initial_position();
         let mut turn_count = 1;
         let winner;
         let mut game_records: Vec<PositionRecord> = Vec::new();
-        let mut game_history: Vec<(u64, Board)> = Vec::new(); // ★変更: 履歴
+        let mut game_history: Vec<(u64, Board)> = Vec::new();
+
+        let mut tt = TranspositionTable::new(1024 * 512);
+
+        // game_idを渡して、スレッドごとに確実に異なるシード値を生成する
+        let mut rng = XorShift64::new(game_id as u64);
 
         let random_plies = rng.next_usize(3) + 1;
+
+        let limits = SearchLimits {
+            max_time: Duration::from_millis(50),
+            max_depth: 11,
+        };
 
         loop {
             game_records.push(PositionRecord {
@@ -215,7 +238,6 @@ fn generate_training_data(
 
             let current_hash = board.compute_initial_hash(z_table);
 
-            // ★追加: 千日手判定
             let count = game_history
                 .iter()
                 .filter(|&&(h, ref b)| h == current_hash && *b == board)
@@ -236,8 +258,7 @@ fn generate_training_data(
                 let random_idx = rng.next_usize(moves.len());
                 moves[random_idx]
             } else {
-                // ★追加: 履歴を渡す
-                search_best_move(&board, z_table, tt, weights, &limits, &game_history).0
+                search_best_move(&board, z_table, &mut tt, weights, &limits, &game_history).0
             };
 
             game_history.push((current_hash, board.clone()));
@@ -261,8 +282,12 @@ fn generate_training_data(
             None => "引き分け",
         };
 
-        if game_id % 10 == 0 || game_id == 1 {
-            println!("ゲーム {} 終了: {} ({}手)", game_id, result_str, turn_count);
+        let current_completed = completed_games.fetch_add(1, Ordering::SeqCst) + 1;
+        if current_completed % 10 == 0 || current_completed == 1 {
+            println!(
+                "ゲーム終了: {} ({}手) [{}/{}]",
+                result_str, turn_count, current_completed, num_games
+            );
         }
 
         let sente_score: f32 = match winner {
@@ -271,17 +296,18 @@ fn generate_training_data(
             None => 0.0,
         };
 
-        save_training_data("training_data.csv", &game_records, sente_score);
-    }
+        save_training_data_safe(&file_mutex, &game_records, sente_score);
+    });
+
     println!("データの生成が完了しました！");
 }
 
-fn save_training_data(filename: &str, records: &[PositionRecord], sente_score: f32) {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(filename)
-        .expect("ファイルを開けませんでした");
+fn save_training_data_safe(
+    file_mutex: &Arc<Mutex<std::fs::File>>,
+    records: &[PositionRecord],
+    sente_score: f32,
+) {
+    let mut file = file_mutex.lock().unwrap();
 
     for record in records {
         let target_score = if record.side_to_move == Player::Sente {
@@ -290,24 +316,20 @@ fn save_training_data(filename: &str, records: &[PositionRecord], sente_score: f
             -sente_score
         };
 
-        // 1. オリジナル
-        write_record(&mut file, target_score, &record.features);
+        write_record(&mut *file, target_score, &record.features);
 
-        // 2. 左右反転
         let flipped: Vec<usize> = record
             .features
             .iter()
             .map(|&f| flip_horizontal(f))
             .collect();
-        write_record(&mut file, target_score, &flipped);
+        write_record(&mut *file, target_score, &flipped);
 
-        // 3. 180度回転 (手番も反転したとみなせる)
         let rotated: Vec<usize> = record.features.iter().map(|&f| rotate_180(f)).collect();
-        write_record(&mut file, target_score, &rotated);
+        write_record(&mut *file, target_score, &rotated);
 
-        // 4. 180度回転 + 左右反転
         let flipped_rotated: Vec<usize> = rotated.iter().map(|&f| flip_horizontal(f)).collect();
-        write_record(&mut file, target_score, &flipped_rotated);
+        write_record(&mut *file, target_score, &flipped_rotated);
     }
 }
 
@@ -318,7 +340,6 @@ fn write_record(file: &mut std::fs::File, target_score: f32, features: &[usize])
     writeln!(file, "{},{}", target_score, features_csv).unwrap();
 }
 
-// --- データの水増し (Data Augmentation) 用ヘルパー関数 ---
 fn flip_horizontal(f: usize) -> usize {
     if f < 120 {
         let sq = f % 12;
@@ -327,7 +348,7 @@ fn flip_horizontal(f: usize) -> usize {
         let new_sq = y * 3 + (2 - x);
         f - sq + new_sq
     } else {
-        f // 持ち駒は左右反転しても変わらない
+        f
     }
 }
 
@@ -338,19 +359,14 @@ fn rotate_180(f: usize) -> usize {
         let player_idx = f / 60;
 
         let new_sq = 11 - sq;
-        let new_player_idx = 1 - player_idx; // 先手と後手を入れ替え
+        let new_player_idx = 1 - player_idx;
 
         new_player_idx * 60 + kind_idx * 12 + new_sq
     } else {
-        if f < 126 {
-            f + 6 // 先手の持ち駒 -> 後手の持ち駒
-        } else {
-            f - 6 // 後手の持ち駒 -> 先手の持ち駒
-        }
+        if f < 126 { f + 6 } else { f - 6 }
     }
 }
 
-// --- 📝 ヘルパー関数: マスや手を人が読める文字列に変換 ---
 fn sq_to_string(sq: u8) -> String {
     let col = (b'A' + (sq % 3)) as char;
     let row = (b'1' + (sq / 3)) as char;
