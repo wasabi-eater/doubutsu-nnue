@@ -226,7 +226,7 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
         let random_plies = rng.next_usize(3) + 1;
 
         let limits = SearchLimits {
-            max_time: Duration::from_millis(50),
+            max_time: Duration::from_millis(100),
             max_depth: 11,
         };
 
