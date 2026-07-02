@@ -1,6 +1,6 @@
 use web_time::{Duration, Instant};
 
-use crate::board::{Board, PieceKind, Player};
+use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::{Move, generate_moves};
 use crate::nnue::{Accumulator, NnueWeights};
 use crate::zobrist::{TTEntry, TranspositionTable, ZobristTable};
@@ -26,11 +26,10 @@ struct Search<'zt, 'tt, 'nw> {
     max_time: Duration,
     nodes: usize,
     history: Vec<(u64, Board)>,
-    killer_moves: [[Option<Move>; 2]; MAX_PLY],
-    aborted: bool, // ★追加: タイムアウトを検知するフラグ
+    killer_moves: &'tt mut [[Option<Move>; 2]; MAX_PLY],
+    aborted: bool,
 }
 
-// 駒の価値 (Move Ordering用)
 fn piece_value(kind: PieceKind) -> i32 {
     match kind {
         PieceKind::Chick => 100,
@@ -55,15 +54,15 @@ pub fn search_best_move(
     generate_moves(board, &mut moves);
     let mut best_move = moves.first().copied().unwrap_or(Move(0));
 
-    let mut best_score = 0;
+    let mut best_score;
     let mut reached_depth = 0;
 
-    // 1. ルートノードでの初期計算
     let current_hash = board.compute_initial_hash(z_table);
     let active_features = board.extract_all_features();
     let initial_acc = Accumulator::refresh(nnue_weights, &active_features);
 
-    // 2. 反復深化 (Iterative Deepening) のループ
+    let mut killer_moves = [[None; 2]; MAX_PLY];
+
     for depth in 1..=limits.max_depth {
         let mut search = Search {
             z_table,
@@ -73,13 +72,13 @@ pub fn search_best_move(
             nodes: 0,
             start_time,
             history: game_history.to_vec(),
-            killer_moves: [[None; 2]; MAX_PLY],
-            aborted: false, // 初期化時はfalse
+            killer_moves: &mut killer_moves,
+            aborted: false,
         };
 
-        let score = search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
+        let (score, current_best_move) =
+            search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
 
-        // タイムアウト(aborted)が発生した場合は、その深さの不完全な結果を完全に破棄する
         if search.aborted {
             println!("時間切れのため、深さ {} の探索を中断しました。", depth);
             if depth > 1 {
@@ -90,12 +89,8 @@ pub fn search_best_move(
 
         let nodes_searched = search.nodes;
 
-        // abortedしていない(完全に探索が終わった)時のみ、最善手を更新する
-        if let Some(entry) = tt.probe(current_hash) {
-            best_move = entry.best_move;
-            best_score = score;
-        }
-
+        best_move = current_best_move;
+        best_score = score;
         reached_depth = depth;
 
         println!(
@@ -116,7 +111,6 @@ pub fn search_best_move(
 }
 
 impl Search<'_, '_, '_> {
-    // タイムアウトをチェックし、超過していればフラグを立てる
     fn check_time(&mut self) {
         if self.nodes & 2047 == 0 && self.start_time.elapsed() >= self.max_time {
             self.aborted = true;
@@ -135,6 +129,19 @@ impl Search<'_, '_, '_> {
                     break;
                 }
                 i -= 2;
+            }
+        }
+        false
+    }
+
+    fn can_capture_lion(&self, board: &Board, moves: &[Move]) -> bool {
+        let opponent = board.side_to_move.opponent();
+        let opponent_lion_idx = get_piece_index(opponent, PieceKind::Lion);
+        let opponent_lion_bb = board.piece_bbs[opponent_lion_idx];
+
+        for m in moves {
+            if !m.is_drop() && (opponent_lion_bb & (1 << m.sq_to())) != 0 {
+                return true;
             }
         }
         false
@@ -163,6 +170,15 @@ impl Search<'_, '_, '_> {
             };
         }
 
+        // 合法手を生成
+        let mut moves = Vec::new();
+        generate_moves(board, &mut moves);
+
+        // これにより、stand_patによる嘘のベータカットを完全に防ぎます。
+        if self.can_capture_lion(board, &moves) {
+            return 20000 - ply as i32;
+        }
+
         if ply > 0 && self.is_repetition(current_hash, board) {
             return 0;
         }
@@ -184,8 +200,6 @@ impl Search<'_, '_, '_> {
             return stand_pat;
         }
 
-        let mut moves = Vec::new();
-        generate_moves(board, &mut moves);
         let opponent = board.side_to_move.opponent();
         let opponent_occupied = board.occupied_by(opponent);
 
@@ -269,32 +283,55 @@ impl Search<'_, '_, '_> {
         beta: i32,
         current_acc: &Accumulator,
         current_hash: u64,
-    ) -> i32 {
+    ) -> (i32, Move) {
         if self.aborted {
-            return 0;
+            return (0, Move(0));
         }
         self.nodes += 1;
         let alpha_orig = alpha;
 
         if let Some(winner) = board.winner() {
-            return if winner == board.side_to_move {
+            let score = if winner == board.side_to_move {
                 20000 - ply as i32
             } else {
                 -20000 + ply as i32
             };
+            return (score, Move(0));
+        }
+
+        let mut moves = Vec::new();
+        generate_moves(board, &mut moves);
+        if moves.is_empty() {
+            return (-20000 + ply as i32, Move(0));
+        }
+
+        if self.can_capture_lion(board, &moves) {
+            // ライオンを取る手を特定してそれを返す
+            let opponent = board.side_to_move.opponent();
+            let opponent_lion_idx = get_piece_index(opponent, PieceKind::Lion);
+            let opponent_lion_bb = board.piece_bbs[opponent_lion_idx];
+
+            for m in &moves {
+                if !m.is_drop() && (opponent_lion_bb & (1 << m.sq_to())) != 0 {
+                    return (20000 - ply as i32, *m);
+                }
+            }
         }
 
         if ply > 0 && self.is_repetition(current_hash, board) {
-            return 0;
+            return (0, Move(0));
         }
 
         if depth == 0 {
-            return self.search_q(board, ply, alpha, beta, current_acc, current_hash, 0);
+            return (
+                self.search_q(board, ply, alpha, beta, current_acc, current_hash, 0),
+                Move(0),
+            );
         }
 
         self.check_time();
         if self.aborted {
-            return 0;
+            return (0, Move(0));
         }
 
         let mut tt_move = None;
@@ -310,22 +347,16 @@ impl Search<'_, '_, '_> {
 
                 if score != 0 {
                     if entry.node_type == EXACT {
-                        return score;
+                        return (score, entry.best_move);
                     }
                     if entry.node_type == LOWER_BOUND && score >= beta {
-                        return score;
+                        return (score, entry.best_move);
                     }
                     if entry.node_type == UPPER_BOUND && score <= alpha {
-                        return score;
+                        return (score, entry.best_move);
                     }
                 }
             }
-        }
-
-        let mut moves = Vec::new();
-        generate_moves(board, &mut moves);
-        if moves.is_empty() {
-            return -20000 + ply as i32;
         }
 
         let opponent = board.side_to_move.opponent();
@@ -349,8 +380,6 @@ impl Search<'_, '_, '_> {
                 }
             }
 
-            // キラー・ヒューリスティック
-            // 駒を取る手や成る手ではない「静かな手」の場合、過去にベータカットに成功したキラー手なら優先
             if ply < MAX_PLY {
                 if Some(m) == self.killer_moves[ply][0] {
                     return 900;
@@ -380,7 +409,7 @@ impl Search<'_, '_, '_> {
 
             let score;
             if is_first_move {
-                score = -self.search_pvs(
+                let (s, _) = self.search_pvs(
                     &next_board,
                     depth - 1,
                     ply + 1,
@@ -389,9 +418,10 @@ impl Search<'_, '_, '_> {
                     &next_acc,
                     next_hash,
                 );
+                score = -s;
                 is_first_move = false;
             } else {
-                let null_score = -self.search_pvs(
+                let (ns, _) = self.search_pvs(
                     &next_board,
                     depth - 1,
                     ply + 1,
@@ -400,12 +430,15 @@ impl Search<'_, '_, '_> {
                     &next_acc,
                     next_hash,
                 );
+                let null_score = -ns;
+
                 if self.aborted {
                     self.history.pop();
-                    return 0;
+                    return (0, Move(0));
                 }
+
                 if null_score > alpha && null_score < beta {
-                    score = -self.search_pvs(
+                    let (s, _) = self.search_pvs(
                         &next_board,
                         depth - 1,
                         ply + 1,
@@ -414,15 +447,15 @@ impl Search<'_, '_, '_> {
                         &next_acc,
                         next_hash,
                     );
+                    score = -s;
                 } else {
                     score = null_score;
                 }
             }
 
-            // 子ノードの探索中にタイムアウトが起きたら、現在のスコアを信用せず直ちに破棄する
             if self.aborted {
                 self.history.pop();
-                return 0;
+                return (0, Move(0));
             }
 
             if score > best_score {
@@ -471,6 +504,6 @@ impl Search<'_, '_, '_> {
             }
         }
 
-        best_score
+        (best_score, best_move)
     }
 }
