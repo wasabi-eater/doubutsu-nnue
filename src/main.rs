@@ -316,20 +316,20 @@ fn save_training_data_safe(
             -sente_score
         };
 
-        write_record(&mut *file, target_score, &record.features);
+        write_record(&mut file, target_score, &record.features);
 
         let flipped: Vec<usize> = record
             .features
             .iter()
             .map(|&f| flip_horizontal(f))
             .collect();
-        write_record(&mut *file, target_score, &flipped);
+        write_record(&mut file, target_score, &flipped);
 
         let rotated: Vec<usize> = record.features.iter().map(|&f| rotate_180(f)).collect();
-        write_record(&mut *file, target_score, &rotated);
+        write_record(&mut file, target_score, &rotated);
 
         let flipped_rotated: Vec<usize> = rotated.iter().map(|&f| flip_horizontal(f)).collect();
-        write_record(&mut *file, target_score, &flipped_rotated);
+        write_record(&mut file, target_score, &flipped_rotated);
     }
 }
 
