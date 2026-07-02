@@ -1,7 +1,6 @@
 use wasm_bindgen::prelude::*;
 use web_time::Duration;
 
-// 既存のモジュールを読み込む
 mod board;
 mod make_move;
 mod move_gen;
@@ -15,7 +14,6 @@ use nnue::NnueWeights;
 use search::{SearchLimits, search_best_move};
 use zobrist::{TranspositionTable, ZobristTable};
 
-// --- ヘルパー関数: 指し手を人間が読める文字列に変換 ---
 fn sq_to_string(sq: u8) -> String {
     let col = (b'A' + (sq % 3)) as char;
     let row = (b'1' + (sq / 3)) as char;
@@ -88,7 +86,6 @@ impl AnimalShogiWasm {
         }
     }
 
-    // ゲームを初期状態にリセットする
     pub fn reset(&mut self) {
         self.board = Board::initial_position();
         self.history.clear();
@@ -96,12 +93,10 @@ impl AnimalShogiWasm {
     }
 
     // --- 🤖 AIの行動 ---
-    // AIに思考させて、選んだ手と到達した探索深さをJSON文字列で返す
     pub fn search_and_apply_move(&mut self, time_limit_ms: u64) -> String {
         let mut moves = Vec::new();
         generate_moves(&self.board, &mut moves);
         if moves.is_empty() {
-            // 合法手がない場合は投了のJSONを返す
             return r#"{"move_text": "投了", "depth": 0}"#.to_string();
         }
 
@@ -112,7 +107,6 @@ impl AnimalShogiWasm {
 
         let current_hash = self.board.compute_initial_hash(&self.z_table);
 
-        // ★修正: 最善手と到達深さをタプルで受け取る
         let (best_move, depth) = search_best_move(
             &self.board,
             &self.z_table,
@@ -125,11 +119,23 @@ impl AnimalShogiWasm {
         self.history.push((current_hash, self.board.clone()));
         self.board.make_move(best_move, &self.z_table, current_hash);
 
+        let from_sq = (best_move.0 & 0x0F) as u8;
+        let to_sq = ((best_move.0 >> 4) & 0x0F) as u8;
+        let kind_val = ((best_move.0 >> 8) & 0x07) as u8;
+        let is_drop = if (best_move.0 & (1 << 12)) != 0 {
+            "true"
+        } else {
+            "false"
+        };
         let move_str = move_to_string(best_move);
-        format!(r#"{{"move_text": "{}", "depth": {}}}"#, move_str, depth)
+
+        format!(
+            r#"{{"move_text": "{}", "depth": {}, "from": {}, "to": {}, "is_drop": {}, "kind": {}}}"#,
+            move_str, depth, from_sq, to_sq, is_drop, kind_val
+        )
     }
 
-    // --- 👤 人間の行動 ---
+    // --- 👤 人間の行動 (メインスレッドの同期用にも使います) ---
     pub fn apply_human_move(&mut self, from_sq: u8, to_sq: u8) -> bool {
         let mut moves = Vec::new();
         generate_moves(&self.board, &mut moves);
@@ -192,7 +198,6 @@ impl AnimalShogiWasm {
                     return 1;
                 }
             }
-
             -1 // 進行中
         }
     }
@@ -234,13 +239,7 @@ impl AnimalShogiWasm {
                 let bit = 1 << sq;
                 let mut found = false;
                 for p in [Player::Sente, Player::Gote] {
-                    for k in [
-                        PieceKind::Lion,
-                        PieceKind::Giraffe,
-                        PieceKind::Elephant,
-                        PieceKind::Chick,
-                        PieceKind::Hen,
-                    ] {
+                    for k in PieceKind::ALL {
                         let idx = crate::board::get_piece_index(p, k);
                         if (self.board.piece_bbs[idx] & bit) != 0 {
                             s.push_str(piece_str(p, k));

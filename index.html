@@ -28,27 +28,20 @@
         <header class="text-center mb-4">
             <h1 class="text-3xl font-bold text-amber-600 mb-2">どうぶつ将棋 AI</h1>
             <p id="message" class="text-lg font-semibold bg-white py-2 px-4 rounded-full shadow-sm text-gray-600 border border-gray-200">
-                WASMを読み込んでいます...
+                AIスレッドを準備中...
             </p>
         </header>
 
         <main id="game-container" class="opacity-0 transition-opacity duration-500">
-            <!-- 上部(相手)の持ち駒 -->
             <div id="top-hand" class="flex gap-2 justify-center mb-4 min-h-[4rem]"></div>
 
-            <!-- 将棋盤 -->
             <div class="p-3 bg-amber-800 rounded-xl shadow-xl w-fit mx-auto border-b-8 border-amber-900">
-                <div id="board" class="grid grid-cols-3 gap-1 board-bg p-1 border-2 border-amber-900 rounded">
-                    <!-- 動的生成 -->
-                </div>
+                <div id="board" class="grid grid-cols-3 gap-1 board-bg p-1 border-2 border-amber-900 rounded"></div>
             </div>
 
-            <!-- 下部(自分)の持ち駒 -->
             <div id="bottom-hand" class="flex gap-2 justify-center mt-4 min-h-[4rem]"></div>
             
-            <!-- コントロールパネル -->
             <div class="mt-8 flex flex-col items-center gap-4">
-                <!-- 先手/後手の切り替えスイッチ -->
                 <div class="flex bg-white rounded-full p-1 shadow border border-gray-200">
                     <label class="cursor-pointer">
                         <input type="radio" name="turn" value="1" class="peer sr-only" checked>
@@ -74,6 +67,9 @@
     </div>
 
     <script type="module">
+        // =======================================================================
+        // ⚠️ 【重要】'your_project_name' の部分をご自身のプロジェクト名に書き換えてください。
+        // =======================================================================
         import init, { AnimalShogiWasm } from './pkg/doubutsu_nnue.js';
 
         const PIECE_MAP = {
@@ -86,23 +82,37 @@
             { val: 2, key: 'elephant', emoji: '🐘' }
         ];
 
-        let game = null;
+        let game = null;         // UIと合法手判定用のメインスレッドWASM
+        let aiWorker = null;     // 思考用の裏スレッド(Worker)
+        
         let selectedCell = null; 
         let selectedHand = null; 
-        let playerTurn = 1; // 1: 先手, 2: 後手
+        let playerTurn = 1; 
         let isAiThinking = false;
+        let isWorkerReady = false;
 
         async function run() {
             try {
+                // 1. メインスレッド用WASMの初期化
                 await init();
                 game = new AnimalShogiWasm();
                 
-                document.getElementById('game-container').classList.remove('opacity-0');
+                // 2. AI思考用のWeb Workerを起動
+                aiWorker = new Worker('worker.js', { type: 'module' });
+                aiWorker.onmessage = (e) => {
+                    const msg = e.data;
+                    if (msg.type === 'ready') {
+                        isWorkerReady = true;
+                        document.getElementById('game-container').classList.remove('opacity-0');
+                        updateUI();
+                    } else if (msg.type === 'search_result') {
+                        handleAiResult(msg.data);
+                    }
+                };
+                aiWorker.postMessage({ type: 'init' });
                 
-                // リセットボタン
                 document.getElementById('reset-btn').addEventListener('click', resetGame);
                 
-                // 先後切り替え
                 document.querySelectorAll('input[name="turn"]').forEach(radio => {
                     radio.addEventListener('change', (e) => {
                         playerTurn = parseInt(e.target.value);
@@ -110,20 +120,21 @@
                     });
                 });
                 
-                updateUI();
             } catch (e) {
-                document.getElementById('message').innerText = "❌ 読み込みエラー。WASMファイルを確認してください。";
+                document.getElementById('message').innerText = "❌ WASMの読み込みに失敗しました。";
                 console.error(e);
             }
         }
 
         function resetGame() {
-            if (game) {
+            if (game && isWorkerReady) {
                 game.reset();
+                aiWorker.postMessage({ type: 'reset' }); // Workerの盤面もリセット
+                
                 selectedCell = null;
                 selectedHand = null;
                 isAiThinking = false;
-                document.getElementById('depth-info').innerText = '';
+                document.getElementById('depth-info').innerText = ''; 
                 updateUI();
             }
         }
@@ -151,7 +162,6 @@
         function updateUI() {
             const state = parseBoardString(game.get_board_string());
             
-            // プレイヤーが先手か後手かで、描画の向きと持ち駒の位置を変える
             if (playerTurn === 1) {
                 renderHand(state.goteHand, 'top', false);
                 renderHand(state.senteHand, 'bottom', true);
@@ -168,7 +178,6 @@
             const container = document.getElementById('board');
             container.innerHTML = '';
             
-            // 人間が後手の場合は、盤面を180度回転(インデックスを逆順に配置)する
             const indices = playerTurn === 1 
                 ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] 
                 : [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
@@ -187,8 +196,6 @@
                 if (pieceChar) {
                     const isGotePiece = pieceChar === pieceChar.toLowerCase();
                     const emoji = PIECE_MAP[pieceChar];
-                    
-                    // 先手から見れば後手の駒が反転、後手から見れば先手の駒が反転
                     const isRotated = playerTurn === 1 ? isGotePiece : !isGotePiece;
                     
                     const pieceEl = document.createElement('div');
@@ -208,7 +215,6 @@
             
             HAND_KINDS.forEach(k => {
                 const count = handState[k.key];
-                
                 const el = document.createElement('div');
                 el.className = `relative w-[4.5rem] h-[4.5rem] border-2 rounded-xl flex items-center justify-center transition-all ${isHuman && count > 0 ? 'cursor-pointer hover:scale-105 bg-white shadow-sm' : 'bg-gray-100 border-gray-200 opacity-80'}`;
                 
@@ -220,7 +226,6 @@
                 
                 if (count > 0) {
                     const pieceEl = document.createElement('div');
-                    // AI側の持ち駒は上下反転させる
                     pieceEl.className = `text-4xl select-none ${!isHuman ? 'piece-gote' : ''}`;
                     pieceEl.innerText = k.emoji;
                     el.appendChild(pieceEl);
@@ -259,12 +264,17 @@
                 return;
             }
             
+            // ★ 人間の指し手をUI盤面に適用し、成功したらWorkerの盤面にも同期させる
             if (selectedCell !== null) {
-                game.apply_human_move(selectedCell, sq);
+                if (game.apply_human_move(selectedCell, sq)) {
+                    aiWorker.postMessage({ type: 'human_move', from: selectedCell, to: sq });
+                }
                 selectedCell = null;
                 updateUI();
             } else if (selectedHand !== null) {
-                game.apply_human_drop(selectedHand, sq);
+                if (game.apply_human_drop(selectedHand, sq)) {
+                    aiWorker.postMessage({ type: 'human_drop', kind: selectedHand, to: sq });
+                }
                 selectedHand = null;
                 updateUI();
             }
@@ -290,18 +300,17 @@
                 msgEl.innerHTML = "🐥 あなたの番です";
             } else {
                 msgEl.innerHTML = "🐶 AIが思考中...";
-                if (!isAiThinking) {
+                if (!isAiThinking && isWorkerReady) {
                     isAiThinking = true;
-                    setTimeout(aiTurn, 50);
+                    // UIスレッドをブロックせず、Workerに探索を依頼する
+                    aiWorker.postMessage({ type: 'search', time_limit: 1000 });
                 }
             }
         }
 
-        function aiTurn() {
+        // WorkerからAIの思考結果を受け取ったときの処理
+        function handleAiResult(jsonStr) {
             try {
-                // AIに1秒考えさせる
-                const jsonStr = game.search_and_apply_move(1000n);
-                
                 const result = JSON.parse(jsonStr);
                 const moveStr = result.move_text;
                 const depth = result.depth;
@@ -312,13 +321,18 @@
                     return;
                 }
                 
-                console.log(`AIの指し手: ${moveStr} (深さ: ${depth})`);
+                // ★ AIがWorker内で指した手を、UIの盤面にも適用(同期)する
+                if (result.is_drop) {
+                    game.apply_human_drop(result.kind, result.to);
+                } else {
+                    game.apply_human_move(result.from, result.to);
+                }
                 
-                // ★追加: UIに探索深さを表示
+                console.log(`AIの指し手: ${moveStr} (深さ: ${depth})`);
                 document.getElementById('depth-info').innerText = `AIの探索深さ: ${depth} 手先`;
                 
             } catch (e) {
-                console.error("AI思考中にエラーが発生しました:", e);
+                console.error("AI思考結果の処理中にエラーが発生しました:", e);
                 document.getElementById('message').innerHTML = "😵 <span class='text-blue-600'>AIがエラーで停止しました</span>";
             }
             
