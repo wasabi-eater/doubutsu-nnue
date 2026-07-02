@@ -303,7 +303,7 @@
                 if (!isAiThinking && isWorkerReady) {
                     isAiThinking = true;
                     // UIスレッドをブロックせず、Workerに探索を依頼する
-                    aiWorker.postMessage({ type: 'search', time_limit: 1000 });
+                    aiWorker.postMessage({ type: 'search', time_limit: 2000 });
                 }
             }
         }
