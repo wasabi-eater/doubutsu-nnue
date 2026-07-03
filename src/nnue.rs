@@ -111,30 +111,21 @@ impl Accumulator {
         }
     }
 
-    // アキュムレータの値から最終的な評価値を計算
+    // シンプルな Clipped ReLU に戻す (ただし i32 の高精度は維持)
     pub fn evaluate(&self, weights: &NnueWeights) -> i32 {
-        // オーバーフローを防ぐため、一時的に i64 で計算する
-        let mut sum: i64 = 0;
+        let mut sum: i32 = weights.output_bias;
         
         for i in 0..HIDDEN_SIZE {
             // 1. Clipped ReLU (0 ~ 127 に収める)
-            let activation = self.values[i].clamp(0, ACTIVATION_MAX) as i64;
+            let activation = self.values[i].clamp(0, ACTIVATION_MAX) as i32;
             
-            // 2. SCReLU: 活性化値を2乗する
-            let squared_activation = activation * activation;
-            
-            // 3. 重みと掛け合わせて足す
-            sum += squared_activation * (weights.output_weights[i] as i64);
+            // 2. 重みと掛け合わせて足す (2乗しない)
+            sum += activation * weights.output_weights[i];
         }
         
-        // この時点でスケールは (2^7)^2 * (2^7) = 2^21 倍に膨れ上がっている。
-        // バイアスのスケール(2^7倍)と足し算できるように、一旦 2^14 (WEIGHT_SCALE_BITS * 2) で割る
-        sum >>= WEIGHT_SCALE_BITS * 2;
+        // 最後に 2^7 で割って、元のスコアスケールに戻す
+        sum >>= WEIGHT_SCALE_BITS;
         
-        // スケールが 2^7 に揃ったので、ここで安全にバイアスを足す
-        sum += weights.output_bias as i64;
-        
-        // 最後に残りの 2^7 で割って、元のスコアスケールに戻す
-        (sum >> WEIGHT_SCALE_BITS) as i32
+        sum
     }
 }

@@ -60,7 +60,6 @@ class AnimalShogiNNUE(nn.Module):
         acc = self.feature_layer(features)
         
         acc = torch.clamp(acc, min=0.0, max=127.0 / QUANT_SCALE)
-        acc = acc * acc
         
         score = self.output_layer(acc)
         return score
