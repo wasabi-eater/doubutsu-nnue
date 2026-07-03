@@ -76,9 +76,11 @@ fn main() {
     }
 
     let z_table = ZobristTable::new();
-    let nnue_weights = NnueWeights::load_from_file("nnue_weights.bin").unwrap_or_else(|_| {
+    
+    let nnue_weights = NnueWeights::load_from_file("nnue_weights.bin").unwrap_or_else(|e| {
         if mode != 1 {
-            println!("⚠️ 学習済みの重みが見つからないため、AIはランダムに動きます！");
+            println!("⚠️ 学習済みの重みの読み込みに失敗しました: {:?}", e);
+            println!("⚠️ AIはランダム(ダミー)に動きます！");
         }
         NnueWeights::new_dummy()
     });

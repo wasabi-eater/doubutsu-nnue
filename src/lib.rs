@@ -74,8 +74,10 @@ impl AnimalShogiWasm {
         let tt = TranspositionTable::new(1024 * 512);
 
         let weight_bytes = include_bytes!("../checkpoints/nnue_weights_gen450.bin");
-        let weights =
-            NnueWeights::load_from_slice(weight_bytes).unwrap_or_else(|_| NnueWeights::new_dummy());
+        let weights = NnueWeights::load_from_slice(weight_bytes).unwrap_or_else(|e| {
+            web_sys::console::error_1(&format!("重みの読み込みエラー: {:?}", e).into());
+            NnueWeights::new_dummy()
+        });
 
         Self {
             board: Board::initial_position(),
