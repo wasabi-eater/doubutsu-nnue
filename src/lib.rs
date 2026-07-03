@@ -73,7 +73,7 @@ impl AnimalShogiWasm {
         let z_table = ZobristTable::new();
         let tt = TranspositionTable::new(1024 * 512);
 
-        let weight_bytes = include_bytes!("../checkpoints/nnue_weights_gen450.bin");
+        let weight_bytes = include_bytes!("../checkpoints/nnue_weights_gen569.bin");
         let weights = NnueWeights::load_from_slice(weight_bytes).unwrap_or_else(|e| {
             web_sys::console::error_1(&format!("重みの読み込みエラー: {:?}", e).into());
             NnueWeights::new_dummy()
