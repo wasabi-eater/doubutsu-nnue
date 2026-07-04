@@ -1,10 +1,7 @@
-// Zobrist Hashingと置換表 (Transposition Table) の実装
-
-use crate::board::{Board, PieceKind, Player, get_piece_index};
+use crate::board::{Board, Player, PieceKind, get_piece_index};
 use crate::move_gen::Move;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-
-// --- 簡易的な疑似乱数生成器 (Xorshift64) ---
 struct XorShift64 {
     state: u64,
 }
@@ -21,87 +18,122 @@ impl XorShift64 {
     }
 }
 
-
-// --- Zobrist 乱数テーブル ---
 pub struct ZobristTable {
-    // ★ NNUEのFeature ID (0〜131) と1対1対応する64ビット乱数テーブル ★
-    // 0..119: 盤上の駒、120..131: 持ち駒の状態
     pub features: [u64; 132],
-    // 手番が先手か後手か
     pub side_to_move: u64,
 }
 
 impl ZobristTable {
-    // プログラム起動時に乱数で初期化する
     pub fn new() -> Self {
         let mut rng = XorShift64::new(0x123456789ABCDEF0);
         let mut table = Self {
             features: [0; 132],
             side_to_move: rng.next(),
         };
-        for i in 0..132 {
-            table.features[i] = rng.next();
-        }
+        for i in 0..132 { table.features[i] = rng.next(); }
         table
     }
 }
 
-// --- 置換表 (Transposition Table) のエントリ ---
 #[derive(Clone, Copy)]
 pub struct TTEntry {
-    pub key: u64,        // 衝突確認用のZobristハッシュキー
-    pub depth: u8,       // 探索深さ
-    pub score: i32,      // 評価値
-    pub best_move: Move, // この局面での最善手 (Move Orderingに必須)
-    pub node_type: u8,   // EXACT(正確な値), UPPER_BOUND(βカット), LOWER_BOUND(αカット) の種類
+    pub key: u64,
+    pub depth: u8,
+    pub score: i32,
+    pub best_move: Move,
+    pub node_type: u8,
 }
 
-// 探索エンジンに持たせる巨大な配列
+// ★修正: 複数スレッドから安全に読み書きできるアトミック構造体
+pub struct TTEntryAtomic {
+    key_xor_data: AtomicU64,
+    data: AtomicU64,
+}
+
+impl TTEntryAtomic {
+    fn new() -> Self {
+        Self {
+            key_xor_data: AtomicU64::new(0),
+            data: AtomicU64::new(0),
+        }
+    }
+
+    // 複数のデータを 64ビットの整数(u64) に圧縮(パック)する
+    fn pack(entry: &TTEntry) -> u64 {
+        let mut d: u64 = 0;
+        // score を i16(-32768~32767) とみなして下位16bitに格納
+        d |= (entry.score as i16 as u16 as u64) & 0xFFFF;
+        // move を 次の16bitに格納
+        d |= ((entry.best_move.0 as u64) & 0xFFFF) << 16;
+        // depth を 次の8bitに格納
+        d |= ((entry.depth as u64) & 0xFF) << 32;
+        // node_type を 最後の8bitに格納
+        d |= ((entry.node_type as u64) & 0xFF) << 40;
+        d
+    }
+
+    // 圧縮されたu64を展開(アンパック)して元の構造体に戻す
+    fn unpack(key: u64, d: u64) -> TTEntry {
+        let score = (d & 0xFFFF) as i16 as i32;
+        let best_move = Move(((d >> 16) & 0xFFFF) as u16);
+        let depth = ((d >> 32) & 0xFF) as u8;
+        let node_type = ((d >> 40) & 0xFF) as u8;
+        TTEntry { key, depth, score, best_move, node_type }
+    }
+}
+
 pub struct TranspositionTable {
-    pub entries: Vec<TTEntry>, // 実際のサイズは 2のべき乗（例: 2^20 = 約100万エントリ）にします
-    pub mask: u64,
+    entries: Vec<TTEntryAtomic>,
+    mask: u64,
 }
 
 impl TranspositionTable {
     pub fn new(capacity: usize) -> Self {
         let size = capacity.next_power_of_two();
         let mask = (size - 1) as u64;
-
-        // ダミーの空エントリで配列を埋める
-        let empty_entry = TTEntry {
-            key: 0,
-            depth: 0,
-            score: 0,
-            best_move: Move(0), // ダミーの手
-            node_type: 0,
-        };
-
-        Self {
-            entries: vec![empty_entry; size],
-            mask,
+        
+        let mut entries = Vec::with_capacity(size);
+        for _ in 0..size {
+            entries.push(TTEntryAtomic::new());
         }
+
+        Self { entries, mask }
     }
-    // 取得
+
     pub fn probe(&self, key: u64) -> Option<TTEntry> {
         let index = (key & self.mask) as usize;
-        let entry = self.entries[index];
-        if entry.key == key {
-            Some(entry) // ハッシュが一致すればキャッシュヒット！
+        let entry = &self.entries[index];
+        
+        // Stockfish式トリック: data と key_xor_data を読み込み、XORして検証する
+        // もし別スレッドが書き込み中の半端な状態を読んだ場合、検証に失敗するため安全
+        let data = entry.data.load(Ordering::Relaxed);
+        let key_xor_data = entry.key_xor_data.load(Ordering::Relaxed);
+        
+        if key_xor_data ^ data == key {
+            Some(TTEntryAtomic::unpack(key, data))
         } else {
             None
         }
     }
-    // 保存 (深さが深いものを優先して上書きするなど、置換戦略がいくつかあります)
-    pub fn store(&mut self, entry: TTEntry) {
+
+    pub fn store(&self, entry: TTEntry) {
         let index = (entry.key & self.mask) as usize;
-        self.entries[index] = entry;
+        let dest = &self.entries[index];
+        
+        // Stockfish式トリック: 上書き前に既存のデータをチェックし、深さが浅ければ上書き
+        let old_data = dest.data.load(Ordering::Relaxed);
+        let old_depth = ((old_data >> 32) & 0xFF) as u8;
+        
+        if entry.depth >= old_depth || entry.node_type == crate::search::EXACT {
+            let new_data = TTEntryAtomic::pack(&entry);
+            // key_xor_data に key ^ data を保存する
+            dest.key_xor_data.store(entry.key ^ new_data, Ordering::Relaxed);
+            dest.data.store(new_data, Ordering::Relaxed);
+        }
     }
 }
 
-// --- Board構造体の拡張 ---
-// Boardの中に現在のハッシュ値を保持させます
 impl Board {
-    // 初期局面のハッシュ値をゼロから計算する (NNUEの初期計算と同じ要領です)
     pub fn compute_initial_hash(&self, z_table: &ZobristTable) -> u64 {
         let mut h = 0;
 

@@ -4,13 +4,11 @@ use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::{Move, generate_moves};
 use crate::nnue::{Accumulator, NnueWeights};
 use crate::zobrist::{TTEntry, TranspositionTable, ZobristTable};
+use rayon::prelude::*;
 
-// --- 置換表のノードタイプ定数 ---
-const EXACT: u8 = 0;
-const LOWER_BOUND: u8 = 1;
-const UPPER_BOUND: u8 = 2;
-
-// 探索の最大深さ (キラー手の配列サイズ用)
+pub const EXACT: u8 = 0;
+pub const LOWER_BOUND: u8 = 1;
+pub const UPPER_BOUND: u8 = 2;
 const MAX_PLY: usize = 64;
 
 pub struct SearchLimits {
@@ -20,7 +18,7 @@ pub struct SearchLimits {
 
 struct Search<'zt, 'tt, 'nw> {
     z_table: &'zt ZobristTable,
-    tt: &'tt mut TranspositionTable,
+    tt: &'tt TranspositionTable,
     nnue_weights: &'nw NnueWeights,
     start_time: Instant,
     max_time: Duration,
@@ -43,7 +41,7 @@ fn piece_value(kind: PieceKind) -> i32 {
 pub fn search_best_move(
     board: &Board,
     z_table: &ZobristTable,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     nnue_weights: &NnueWeights,
     limits: &SearchLimits,
     game_history: &[(u64, Board)],
@@ -52,62 +50,102 @@ pub fn search_best_move(
 
     let mut moves = Vec::new();
     generate_moves(board, &mut moves);
-    let mut best_move = moves.first().copied().unwrap_or(Move(0));
-
-    let mut best_score;
-    let mut reached_depth = 0;
+    let default_move = moves.first().copied().unwrap_or(Move(0));
 
     let current_hash = board.compute_initial_hash(z_table);
     let active_features = board.extract_all_features();
     let initial_acc = Accumulator::refresh(nnue_weights, &active_features);
 
-    let mut killer_moves = [[None; 2]; MAX_PLY];
+    // 実行環境のコア数を取得し、その数だけスレッドを作る
+    let num_threads = rayon::current_num_threads().max(1);
 
-    for depth in 1..=limits.max_depth {
-        let mut search = Search {
-            z_table,
-            tt,
-            nnue_weights,
-            max_time: limits.max_time,
-            nodes: 0,
-            start_time,
-            history: game_history.to_vec(),
-            killer_moves: &mut killer_moves,
-            aborted: false,
-        };
-
-        let (score, current_best_move) =
-            search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
-
-        if search.aborted {
-            println!("時間切れのため、深さ {} の探索を中断しました。", depth);
-            if depth > 1 {
-                reached_depth = depth - 1;
-            }
-            break;
-        }
-
-        let nodes_searched = search.nodes;
-
-        best_move = current_best_move;
-        best_score = score;
-        reached_depth = depth;
-
+    if num_threads > 1 {
         println!(
-            "info depth {} score {} nodes {} time {}ms pv ...",
-            depth,
-            score,
-            nodes_searched,
-            start_time.elapsed().as_millis()
+            "🤖 {}スレッドで並列探索(Lazy SMP)を開始します...",
+            num_threads
         );
-
-        if best_score.abs() >= 19000 {
-            println!("詰みを発見したので探索を終了します");
-            break;
-        }
     }
 
-    (best_move, reached_depth)
+    // スレッドごとに並列実行 (Lazy SMP)
+    let thread_results: Vec<_> = (0..num_threads)
+        .into_par_iter()
+        .map(|thread_id| {
+            let mut best_move = default_move;
+            let mut best_score = 0;
+            let mut reached_depth = 0;
+            let mut killer_moves = [[None; 2]; MAX_PLY];
+
+            // スレッドごとに少しだけ探索の初期深さをずらして、分散させる
+            // (ヘルパースレッドは浅い探索から始めてTTを素早く埋める役割)
+            let depth_offset = if thread_id == 0 { 0 } else { thread_id % 3 };
+
+            for depth in 1..=limits.max_depth {
+                let actual_depth = depth as i32 - depth_offset as i32;
+                if actual_depth < 1 {
+                    continue;
+                }
+                let actual_depth = actual_depth as u8;
+
+                let mut search = Search {
+                    z_table,
+                    tt,
+                    nnue_weights,
+                    max_time: limits.max_time,
+                    nodes: 0,
+                    start_time,
+                    history: game_history.to_vec(),
+                    killer_moves: &mut killer_moves,
+                    aborted: false,
+                };
+
+                let (score, current_best_move) = search.search_pvs(
+                    board,
+                    actual_depth,
+                    0,
+                    -30000,
+                    30000,
+                    &initial_acc,
+                    current_hash,
+                );
+
+                if search.aborted {
+                    if thread_id == 0 && actual_depth > 1 {
+                        reached_depth = actual_depth - 1;
+                    }
+                    break;
+                }
+
+                // メインスレッド(0)の結果のみを正とする
+                if thread_id == 0 {
+                    best_move = current_best_move;
+                    best_score = score;
+                    reached_depth = actual_depth;
+
+                    println!(
+                        "info depth {} score {} nodes {} time {}ms pv ...",
+                        actual_depth,
+                        score,
+                        search.nodes,
+                        start_time.elapsed().as_millis()
+                    );
+                }
+
+                if score.abs() >= 19000 {
+                    break;
+                }
+            }
+
+            (best_move, reached_depth, best_score)
+        })
+        .collect();
+
+    // ★ メインスレッド(0番)の結果を返す
+    let main_result = thread_results[0];
+    if main_result.2.abs() >= 19000 {
+        println!("詰みを発見したので探索を終了します");
+    }
+
+    (main_result.0, main_result.1)
 }
 
 impl Search<'_, '_, '_> {
@@ -174,7 +212,6 @@ impl Search<'_, '_, '_> {
         let mut moves = Vec::new();
         generate_moves(board, &mut moves);
 
-        // これにより、stand_patによる嘘のベータカットを完全に防ぎます。
         if self.can_capture_lion(board, &moves) {
             return 20000 - ply as i32;
         }

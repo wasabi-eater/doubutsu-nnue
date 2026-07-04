@@ -14,6 +14,19 @@ export class AnimalShogiWasm {
     search_and_apply_move(time_limit_ms: bigint): string;
 }
 
+export function initThreadPool(num_threads: number): Promise<any>;
+
+export class wbg_rayon_PoolBuilder {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    build(): void;
+    numThreads(): number;
+    receiver(): number;
+}
+
+export function wbg_rayon_start_worker(receiver: number): void;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -27,6 +40,12 @@ export interface InitOutput {
     readonly animalshogiwasm_new: () => number;
     readonly animalshogiwasm_reset: (a: number) => void;
     readonly animalshogiwasm_search_and_apply_move: (a: number, b: bigint) => [number, number];
+    readonly __wbg_wbg_rayon_poolbuilder_free: (a: number, b: number) => void;
+    readonly initThreadPool: (a: number) => any;
+    readonly wbg_rayon_poolbuilder_build: (a: number) => void;
+    readonly wbg_rayon_poolbuilder_numThreads: (a: number) => number;
+    readonly wbg_rayon_poolbuilder_receiver: (a: number) => number;
+    readonly wbg_rayon_start_worker: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
