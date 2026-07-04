@@ -1,4 +1,4 @@
-use crate::board::{Board, Player, PieceKind, get_piece_index};
+use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::Move;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -8,7 +8,9 @@ struct XorShift64 {
 
 impl XorShift64 {
     fn new(seed: u64) -> Self {
-        Self { state: if seed == 0 { 1 } else { seed } }
+        Self {
+            state: if seed == 0 { 1 } else { seed },
+        }
     }
     fn next(&mut self) -> u64 {
         self.state ^= self.state << 13;
@@ -30,7 +32,9 @@ impl ZobristTable {
             features: [0; 132],
             side_to_move: rng.next(),
         };
-        for i in 0..132 { table.features[i] = rng.next(); }
+        for i in 0..132 {
+            table.features[i] = rng.next();
+        }
         table
     }
 }
@@ -44,7 +48,6 @@ pub struct TTEntry {
     pub node_type: u8,
 }
 
-// ★修正: 複数スレッドから安全に読み書きできるアトミック構造体
 pub struct TTEntryAtomic {
     key_xor_data: AtomicU64,
     data: AtomicU64,
@@ -58,27 +61,27 @@ impl TTEntryAtomic {
         }
     }
 
-    // 複数のデータを 64ビットの整数(u64) に圧縮(パック)する
     fn pack(entry: &TTEntry) -> u64 {
         let mut d: u64 = 0;
-        // score を i16(-32768~32767) とみなして下位16bitに格納
         d |= (entry.score as i16 as u16 as u64) & 0xFFFF;
-        // move を 次の16bitに格納
         d |= ((entry.best_move.0 as u64) & 0xFFFF) << 16;
-        // depth を 次の8bitに格納
         d |= ((entry.depth as u64) & 0xFF) << 32;
-        // node_type を 最後の8bitに格納
         d |= ((entry.node_type as u64) & 0xFF) << 40;
         d
     }
 
-    // 圧縮されたu64を展開(アンパック)して元の構造体に戻す
     fn unpack(key: u64, d: u64) -> TTEntry {
         let score = (d & 0xFFFF) as i16 as i32;
         let best_move = Move(((d >> 16) & 0xFFFF) as u16);
         let depth = ((d >> 32) & 0xFF) as u8;
         let node_type = ((d >> 40) & 0xFF) as u8;
-        TTEntry { key, depth, score, best_move, node_type }
+        TTEntry {
+            key,
+            depth,
+            score,
+            best_move,
+            node_type,
+        }
     }
 }
 
@@ -103,9 +106,7 @@ impl TranspositionTable {
     pub fn probe(&self, key: u64) -> Option<TTEntry> {
         let index = (key & self.mask) as usize;
         let entry = &self.entries[index];
-        
-        // Stockfish式トリック: data と key_xor_data を読み込み、XORして検証する
-        // もし別スレッドが書き込み中の半端な状態を読んだ場合、検証に失敗するため安全
+
         let data = entry.data.load(Ordering::Relaxed);
         let key_xor_data = entry.key_xor_data.load(Ordering::Relaxed);
         
@@ -119,15 +120,17 @@ impl TranspositionTable {
     pub fn store(&self, entry: TTEntry) {
         let index = (entry.key & self.mask) as usize;
         let dest = &self.entries[index];
-        
-        // Stockfish式トリック: 上書き前に既存のデータをチェックし、深さが浅ければ上書き
+
         let old_data = dest.data.load(Ordering::Relaxed);
         let old_depth = ((old_data >> 32) & 0xFF) as u8;
-        
-        if entry.depth >= old_depth || entry.node_type == crate::search::EXACT {
-            let new_data = TTEntryAtomic::pack(&entry);
-            // key_xor_data に key ^ data を保存する
-            dest.key_xor_data.store(entry.key ^ new_data, Ordering::Relaxed);
+
+        let new_data = TTEntryAtomic::pack(&entry);
+
+        if new_data != old_data
+            && (entry.depth >= old_depth || entry.node_type == crate::search::EXACT)
+        {
+            dest.key_xor_data
+                .store(entry.key ^ new_data, Ordering::Relaxed);
             dest.data.store(new_data, Ordering::Relaxed);
         }
     }
@@ -136,38 +139,35 @@ impl TranspositionTable {
 impl Board {
     pub fn compute_initial_hash(&self, z_table: &ZobristTable) -> u64 {
         let mut h = 0;
-
-        // 盤面に存在するすべてのFeature IDを取得する関数(仮)を呼ぶ
         let active_features = self.extract_all_features();
         for &feature_id in &active_features {
             h ^= z_table.features[feature_id];
         }
-
-        // 手番のXOR
         if self.side_to_move == Player::Sente {
             h ^= z_table.side_to_move;
         }
         h
     }
 
-    // 盤上のすべてのFeature IDを抽出するヘルパー (初期ハッシュ計算やNNUE初期化用)
     pub fn extract_all_features(&self) -> Vec<usize> {
         let mut features = Vec::new();
-        // 盤上の駒
         for player in [Player::Sente, Player::Gote] {
-            for kind in PieceKind::ALL {
+            for kind in [
+                PieceKind::Lion,
+                PieceKind::Giraffe,
+                PieceKind::Elephant,
+                PieceKind::Chick,
+                PieceKind::Hen,
+            ] {
                 let p_idx = get_piece_index(player, kind);
                 let mut bb = self.piece_bbs[p_idx];
                 while bb != 0 {
                     let sq = bb.trailing_zeros() as usize;
-                    // make_move.rs で定義した関数を使ってFeature IDを取得
                     features.push(crate::make_move::get_board_feature(player, kind, sq));
                     bb &= bb - 1;
                 }
             }
         }
-
-        // 持ち駒の抽出
         for player in [Player::Sente, Player::Gote] {
             let p_idx = player as usize;
             let chicks = self.hands[p_idx].chicks;

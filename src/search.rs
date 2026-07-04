@@ -1,3 +1,4 @@
+use web_sys::console;
 use web_time::{Duration, Instant};
 
 use crate::board::{Board, PieceKind, Player, get_piece_index};
@@ -5,6 +6,8 @@ use crate::move_gen::{Move, generate_moves};
 use crate::nnue::{Accumulator, NnueWeights};
 use crate::zobrist::{TTEntry, TranspositionTable, ZobristTable};
 use rayon::prelude::*;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const EXACT: u8 = 0;
 pub const LOWER_BOUND: u8 = 1;
@@ -26,6 +29,8 @@ struct Search<'zt, 'tt, 'nw> {
     history: Vec<(u64, Board)>,
     killer_moves: &'tt mut [[Option<Move>; 2]; MAX_PLY],
     aborted: bool,
+    shared_abort: Arc<AtomicBool>,
+    thread_id: usize,
 }
 
 fn piece_value(kind: PieceKind) -> i32 {
@@ -47,6 +52,7 @@ pub fn search_best_move(
     game_history: &[(u64, Board)],
 ) -> (Move, u8) {
     let start_time = Instant::now();
+    let shared_abort = Arc::new(AtomicBool::new(false));
 
     let mut moves = Vec::new();
     generate_moves(board, &mut moves);
@@ -56,17 +62,8 @@ pub fn search_best_move(
     let active_features = board.extract_all_features();
     let initial_acc = Accumulator::refresh(nnue_weights, &active_features);
 
-    // 実行環境のコア数を取得し、その数だけスレッドを作る
     let num_threads = rayon::current_num_threads().max(1);
 
-    if num_threads > 1 {
-        println!(
-            "🤖 {}スレッドで並列探索(Lazy SMP)を開始します...",
-            num_threads
-        );
-    }
-
-    // スレッドごとに並列実行 (Lazy SMP)
     let thread_results: Vec<_> = (0..num_threads)
         .into_par_iter()
         .map(|thread_id| {
@@ -75,8 +72,6 @@ pub fn search_best_move(
             let mut reached_depth = 0;
             let mut killer_moves = [[None; 2]; MAX_PLY];
 
-            // スレッドごとに少しだけ探索の初期深さをずらして、分散させる
-            // (ヘルパースレッドは浅い探索から始めてTTを素早く埋める役割)
             let depth_offset = if thread_id == 0 { 0 } else { thread_id % 3 };
 
             for depth in 1..=limits.max_depth {
@@ -96,6 +91,8 @@ pub fn search_best_move(
                     history: game_history.to_vec(),
                     killer_moves: &mut killer_moves,
                     aborted: false,
+                    shared_abort: shared_abort.clone(),
+                    thread_id,
                 };
 
                 let (score, current_best_move) = search.search_pvs(
@@ -115,22 +112,29 @@ pub fn search_best_move(
                     break;
                 }
 
-                // メインスレッド(0)の結果のみを正とする
                 if thread_id == 0 {
                     best_move = current_best_move;
                     best_score = score;
                     reached_depth = actual_depth;
 
-                    println!(
-                        "info depth {} score {} nodes {} time {}ms pv ...",
-                        actual_depth,
-                        score,
-                        search.nodes,
-                        start_time.elapsed().as_millis()
+                    // ★追加: 開発者コンソールに深さと計算速度(NPS)を出力
+                    let elapsed_ms = start_time.elapsed().as_millis() as u64;
+                    let nps = if elapsed_ms > 0 {
+                        search.nodes as u64 * 1000 / elapsed_ms
+                    } else {
+                        0
+                    };
+                    console::log_1(
+                        &format!(
+                            "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | NPS: {} / core",
+                            actual_depth, score, search.nodes, elapsed_ms, nps
+                        )
+                        .into(),
                     );
                 }
 
                 if score.abs() >= 19000 {
+                    shared_abort.store(true, Ordering::Relaxed); // 詰みを見つけたら全スレッド停止
                     break;
                 }
             }
@@ -139,19 +143,21 @@ pub fn search_best_move(
         })
         .collect();
 
-    // ★ メインスレッド(0番)の結果を返す
     let main_result = thread_results[0];
-    if main_result.2.abs() >= 19000 {
-        println!("詰みを発見したので探索を終了します");
-    }
-
     (main_result.0, main_result.1)
 }
 
 impl Search<'_, '_, '_> {
     fn check_time(&mut self) {
-        if self.nodes & 2047 == 0 && self.start_time.elapsed() >= self.max_time {
-            self.aborted = true;
+        if self.nodes & 2047 == 0 {
+            // 共有フラグをチェックし、他のスレッドが終了していたら自分も止まる
+            if self.shared_abort.load(Ordering::Relaxed) {
+                self.aborted = true;
+            } else if self.thread_id == 0 && self.start_time.elapsed() >= self.max_time {
+                // メインスレッドが時間切れになったら、全スレッドに停止指令を出す
+                self.shared_abort.store(true, Ordering::Relaxed);
+                self.aborted = true;
+            }
         }
     }
 
@@ -232,7 +238,6 @@ impl Search<'_, '_, '_> {
         if alpha < stand_pat {
             alpha = stand_pat;
         }
-
         if q_depth < -10 {
             return stand_pat;
         }
@@ -297,7 +302,6 @@ impl Search<'_, '_, '_> {
                 self.history.pop();
                 return 0;
             }
-
             if score >= beta {
                 self.history.pop();
                 return score;
@@ -403,7 +407,6 @@ impl Search<'_, '_, '_> {
             if Some(m) == tt_move {
                 return i32::MAX;
             }
-
             let mut move_score = 0;
             if !m.is_drop() {
                 let to_bit = 1 << m.sq_to();
@@ -416,7 +419,6 @@ impl Search<'_, '_, '_> {
                     return move_score;
                 }
             }
-
             if ply < MAX_PLY {
                 if Some(m) == self.killer_moves[ply][0] {
                     return 900;
@@ -424,9 +426,24 @@ impl Search<'_, '_, '_> {
                     return 800;
                 }
             }
-
             move_score
         });
+
+        // ★追加: スレッドごとに調べる手の順番をずらし、探索を分散させる(Lazy SMPのキモ)
+        if ply == 0 && moves.len() > 1 && self.thread_id > 0 {
+            let shift_amount = self.thread_id % moves.len();
+            if shift_amount > 0 {
+                let mut shifted = Vec::with_capacity(moves.len());
+                shifted.push(moves[0]); // 最善手候補(TTの手など)は固定
+                let remaining = &moves[1..];
+                if !remaining.is_empty() {
+                    let actual_shift = shift_amount % remaining.len();
+                    shifted.extend_from_slice(&remaining[actual_shift..]);
+                    shifted.extend_from_slice(&remaining[..actual_shift]);
+                }
+                moves = shifted;
+            }
+        }
 
         let mut best_score = -30000;
         let mut best_move = moves.first().copied().unwrap_or(Move(0));
@@ -444,7 +461,7 @@ impl Search<'_, '_, '_> {
                 &feature_update.removed[..feature_update.removed_count],
             );
 
-            let score;
+            let mut score;
             if is_first_move {
                 let (s, _) = self.search_pvs(
                     &next_board,
@@ -468,12 +485,10 @@ impl Search<'_, '_, '_> {
                     next_hash,
                 );
                 let null_score = -ns;
-
                 if self.aborted {
                     self.history.pop();
                     return (0, Move(0));
                 }
-
                 if null_score > alpha && null_score < beta {
                     let (s, _) = self.search_pvs(
                         &next_board,
@@ -503,9 +518,11 @@ impl Search<'_, '_, '_> {
                 }
                 if alpha >= beta {
                     let is_capture = !m.is_drop() && (opponent_occupied & (1 << m.sq_to())) != 0;
-                    if !is_capture && ply < MAX_PLY && self.killer_moves[ply][0] != Some(m) {
-                        self.killer_moves[ply][1] = self.killer_moves[ply][0];
-                        self.killer_moves[ply][0] = Some(m);
+                    if !is_capture && ply < MAX_PLY {
+                        if self.killer_moves[ply][0] != Some(m) {
+                            self.killer_moves[ply][1] = self.killer_moves[ply][0];
+                            self.killer_moves[ply][0] = Some(m);
+                        }
                     }
                     break;
                 }
