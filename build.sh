@@ -14,10 +14,7 @@ wasm-pack build --target web --release
 
 echo "=== 4. Tailwind CSS の静的ビルド ==="
 
-# クラウド上でTailwindツールを落としてきて、HTMLから必要なCSSだけを抽出・生成します！
-
-npm install -D tailwindcss
-npx tailwindcss -o style.css --content index.html
+npx --yes tailwindcss@3 -o style.css --content index.html
 
 echo "=== 5. 公開用フォルダ(dist)の準備 ==="
 rm -rf dist
