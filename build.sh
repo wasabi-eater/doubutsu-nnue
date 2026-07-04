@@ -10,15 +10,22 @@ echo "=== 2. wasm-packのインストール ==="
 curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
 echo "=== 3. WASMのマルチスレッドビルド実行 ==="
-
 wasm-pack build --target web --release
 
-echo "=== 4. 公開用フォルダ(dist)の準備 ==="
+echo "=== 4. Tailwind CSS の静的ビルド ==="
+
+# クラウド上でTailwindツールを落としてきて、HTMLから必要なCSSだけを抽出・生成します！
+
+npm install -D tailwindcss
+npx tailwindcss -o style.css --content index.html
+
+echo "=== 5. 公開用フォルダ(dist)の準備 ==="
 rm -rf dist
 mkdir -p dist
 cp index.html dist/
 cp worker.js dist/
 cp _headers dist/
+cp style.css dist/
 cp -r pkg dist/
 
 echo "=== すべてのビルドが完了しました！ ==="

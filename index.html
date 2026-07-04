@@ -5,7 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>🦁 最強どうぶつ将棋AI (Worker版)</title>
-    <script src="https://cdn.tailwindcss.com" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="style.css">
     <style>
         body {
             font-family: 'Hiragino Maru Gothic ProN', 'Rounded M+ 1c', 'Kosugi Maru', sans-serif;
@@ -314,6 +314,7 @@
                 msgEl.innerHTML = "🐶 AIが思考中...";
                 if (!isAiThinking && isWorkerReady) {
                     isAiThinking = true;
+                    // 時間を長く設定すればするほど、マルチスレッドの力が爆発します
                     aiWorker.postMessage({ type: 'search', time_limit: 1000 });
                 }
             }

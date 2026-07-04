@@ -7,6 +7,8 @@ rustflags = [
     "-C",
     "link-arg=--import-memory",
     "-C",
+    "link-arg=--max-memory=268435456",
+    "-C",
     "link-arg=--no-check-features",
     "-C",
     "link-arg=--export=__heap_base",
