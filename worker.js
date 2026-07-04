@@ -1,4 +1,4 @@
-import init, { initThreadPool, AnimalShogiWasm } from './dist/pkg/your_project_name.js';
+import init, { initThreadPool, AnimalShogiWasm } from './pkg/your_project_name.js';
 
 let game = null;
 
