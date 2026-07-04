@@ -1,7 +1,4 @@
 #!/bin/bash
-
-# エラーが起きたらそこで停止する
-
 set -e
 
 echo "=== 1. Rust Nightlyのインストール ==="
@@ -14,18 +11,11 @@ curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
 echo "=== 3. WASMのマルチスレッドビルド実行 ==="
 
-export RUSTFLAGS="-C target-feature=+bulk-memory,+mutable-globals,+atomics,+simd128 -C link-arg=--shared-memory -C link-arg=--export=__heap_base -C link-arg=--export=__data_end"
 wasm-pack build --target web --release
 
 echo "=== 4. 公開用フォルダ(dist)の準備 ==="
-
-# 一旦distフォルダの中身を消して作り直す
-
 rm -rf dist
 mkdir -p dist
-
-# 必要なファイルだけをコピー
-
 cp index.html dist/
 cp worker.js dist/
 cp _headers dist/
