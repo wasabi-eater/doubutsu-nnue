@@ -13,7 +13,8 @@ echo "=== 2. wasm-packのインストール ==="
 curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
 echo "=== 3. WASMのマルチスレッドビルド実行 ==="
-export RUSTFLAGS="-C target-feature=+bulk-memory,+mutable-globals,+atomics,+simd128"
+
+export RUSTFLAGS="-C target-feature=+bulk-memory,+mutable-globals,+atomics,+simd128 -C link-arg=--shared-memory"
 wasm-pack build --target web --release
 
 echo "=== 4. 公開用フォルダ(dist)の準備 ==="
