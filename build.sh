@@ -12,6 +12,10 @@ curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 echo "=== 3. WASMのマルチスレッドビルド実行 ==="
 wasm-pack build --target web --release
 
+echo "=== 3.5. ブラウザネイティブESMのパス修正 ==="
+
+find pkg/snippets -type f -name "*.js" -exec sed -i "s|from '../../'|from '../../doubutsu_nnue.js'|g" {} +
+
 echo "=== 4. Tailwind CSS の静的ビルド ==="
 
 npx --yes tailwindcss@3 -o style.css --content index.html
