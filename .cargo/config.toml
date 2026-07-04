@@ -5,6 +5,8 @@ rustflags = [
     "-C",
     "link-arg=--shared-memory",
     "-C",
+    "link-arg=--import-memory",
+    "-C",
     "link-arg=--no-check-features",
     "-C",
     "link-arg=--export=__heap_base",
