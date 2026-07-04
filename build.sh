@@ -12,8 +12,9 @@ curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 echo "=== 3. WASMのマルチスレッドビルド実行 ==="
 wasm-pack build --target web --release
 
-echo "=== 3.5. ブラウザネイティブESMのパス修正 (完全記号レス版) ==="
-cat > fix_paths.js << 'EOF'
+echo "=== 3.5. ブラウザネイティブESMのパス修正 (完全網羅版) ==="
+
+cat << 'EOF' > fix_paths.js
 const fs = require('fs');
 const path = require('path');
 function fixImports(dir) {
@@ -24,17 +25,38 @@ function fixImports(dir) {
             fixImports(fullPath);
         } else if (fullPath.endsWith('.js')) {
             let content = fs.readFileSync(fullPath, 'utf8');
-            const target = "from '../../doubutsu_nnue.js'";
 
-            content = content.replaceAll("from '../../'", target);
-            content = content.replaceAll('from "../../"', target);
-            content = content.replaceAll("from '../../doubutsu_nnue'", target);
-            content = content.replaceAll('from "../../doubutsu_nnue"', target);
-            content = content.replaceAll("from '../../doubutsu-nnue'", target);
-            content = content.replaceAll('from "../../doubutsu-nnue"', target);
+            const patterns = [
+                // 2階層上 (../../)
+                { from: "from '../../'", to: "from '../../doubutsu_nnue.js'" },
+                { from: 'from "../../"', to: 'from "../../doubutsu_nnue.js"' },
+                { from: "import('../../')", to: "import('../../doubutsu_nnue.js')" },
+                { from: 'import("../../")', to: 'import("../../doubutsu_nnue.js")' },
+                { from: "import('../../doubutsu_nnue')", to: "import('../../doubutsu_nnue.js')" },
+                
+                // 3階層上 (../../..)
+                { from: "from '../../..'", to: "from '../../../doubutsu_nnue.js'" },
+                { from: 'from "../../.."', to: 'from "../../../doubutsu_nnue.js"' },
+                { from: "from '../../../'", to: "from '../../../doubutsu_nnue.js'" },
+                { from: 'from "../../../"', to: 'from "../../../doubutsu_nnue.js"' },
+                { from: "import('../../..')", to: "import('../../../doubutsu_nnue.js')" },
+                { from: 'import("../../..")', to: 'import("../../../doubutsu_nnue.js")' },
+                { from: "import('../../../')", to: "import('../../../doubutsu_nnue.js')" },
+                { from: 'import("../../../")', to: 'import("../../../doubutsu_nnue.js")' }
+            ];
+
+            let modified = false;
+            for (const p of patterns) {
+                if (content.includes(p.from)) {
+                    content = content.replaceAll(p.from, p.to);
+                    modified = true;
+                }
+            }
             
-            fs.writeFileSync(fullPath, content);
-            console.log('パスを修正しました: ' + fullPath);
+            if (modified) {
+                fs.writeFileSync(fullPath, content);
+                console.log('✅ パスを修正しました: ' + fullPath);
+            }
         }
     });
 }
