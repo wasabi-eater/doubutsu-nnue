@@ -1,33 +1,48 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>🦁 最強どうぶつ将棋AI</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>🦁 最強どうぶつ将棋AI (Worker版)</title>
+    <script src="https://cdn.tailwindcss.com" crossorigin="anonymous"></script>
     <style>
         body {
             font-family: 'Hiragino Maru Gothic ProN', 'Rounded M+ 1c', 'Kosugi Maru', sans-serif;
             background-color: #f9fafb;
             touch-action: manipulation;
         }
-        .cell { width: 80px; height: 80px; }
-        @media (max-width: 400px) { .cell { width: 70px; height: 70px; } }
-        
-        .piece-gote { transform: rotate(180deg); }
-        
+
+        .cell {
+            width: 80px;
+            height: 80px;
+        }
+
+        @media (max-width: 400px) {
+            .cell {
+                width: 70px;
+                height: 70px;
+            }
+        }
+
+        .piece-gote {
+            transform: rotate(180deg);
+        }
+
         .board-bg {
             background-color: #e6a756;
-            background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.03) 10px, rgba(0,0,0,0.03) 20px);
+            background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0, 0, 0, 0.03) 10px, rgba(0, 0, 0, 0.03) 20px);
         }
     </style>
 </head>
+
 <body class="flex flex-col items-center min-h-screen py-6 text-gray-800">
 
     <div class="w-full max-w-md px-4">
         <header class="text-center mb-4">
             <h1 class="text-3xl font-bold text-amber-600 mb-2">どうぶつ将棋 AI</h1>
-            <p id="message" class="text-lg font-semibold bg-white py-2 px-4 rounded-full shadow-sm text-gray-600 border border-gray-200">
+            <p id="message"
+                class="text-lg font-semibold bg-white py-2 px-4 rounded-full shadow-sm text-gray-600 border border-gray-200">
                 AIスレッドを準備中...
             </p>
         </header>
@@ -40,36 +55,36 @@
             </div>
 
             <div id="bottom-hand" class="flex gap-2 justify-center mt-4 min-h-[4rem]"></div>
-            
+
             <div class="mt-8 flex flex-col items-center gap-4">
                 <div class="flex bg-white rounded-full p-1 shadow border border-gray-200">
                     <label class="cursor-pointer">
                         <input type="radio" name="turn" value="1" class="peer sr-only" checked>
-                        <div class="px-4 py-2 rounded-full text-gray-600 peer-checked:bg-amber-500 peer-checked:text-white font-bold transition-colors">
+                        <div
+                            class="px-4 py-2 rounded-full text-gray-600 peer-checked:bg-amber-500 peer-checked:text-white font-bold transition-colors">
                             🐥 先手 (あなた)
                         </div>
                     </label>
                     <label class="cursor-pointer">
                         <input type="radio" name="turn" value="2" class="peer sr-only">
-                        <div class="px-4 py-2 rounded-full text-gray-600 peer-checked:bg-amber-500 peer-checked:text-white font-bold transition-colors">
+                        <div
+                            class="px-4 py-2 rounded-full text-gray-600 peer-checked:bg-amber-500 peer-checked:text-white font-bold transition-colors">
                             🐶 後手 (あなた)
                         </div>
                     </label>
                 </div>
 
-                <button id="reset-btn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-6 rounded-full shadow transition-colors w-full max-w-[200px]">
+                <button id="reset-btn"
+                    class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-6 rounded-full shadow transition-colors w-full max-w-[200px]">
                     🔄 はじめから
                 </button>
-                
+
                 <div id="depth-info" class="text-sm font-bold text-gray-400 mt-[-0.5rem] h-5"></div>
             </div>
         </main>
     </div>
 
     <script type="module">
-        // =======================================================================
-        // ⚠️ 【重要】'your_project_name' の部分をご自身のプロジェクト名に書き換えてください。
-        // =======================================================================
         import init, { AnimalShogiWasm } from './pkg/doubutsu_nnue.js';
 
         const PIECE_MAP = {
@@ -84,10 +99,10 @@
 
         let game = null;         // UIと合法手判定用のメインスレッドWASM
         let aiWorker = null;     // 思考用の裏スレッド(Worker)
-        
-        let selectedCell = null; 
-        let selectedHand = null; 
-        let playerTurn = 1; 
+
+        let selectedCell = null;
+        let selectedHand = null;
+        let playerTurn = 1;
         let isAiThinking = false;
         let isWorkerReady = false;
 
@@ -96,7 +111,7 @@
                 // 1. メインスレッド用WASMの初期化
                 await init();
                 game = new AnimalShogiWasm();
-                
+
                 // 2. AI思考用のWeb Workerを起動
                 aiWorker = new Worker('worker.js', { type: 'module' });
                 aiWorker.onmessage = (e) => {
@@ -110,16 +125,16 @@
                     }
                 };
                 aiWorker.postMessage({ type: 'init' });
-                
+
                 document.getElementById('reset-btn').addEventListener('click', resetGame);
-                
+
                 document.querySelectorAll('input[name="turn"]').forEach(radio => {
                     radio.addEventListener('change', (e) => {
                         playerTurn = parseInt(e.target.value);
                         resetGame();
                     });
                 });
-                
+
             } catch (e) {
                 document.getElementById('message').innerText = "❌ WASMの読み込みに失敗しました。";
                 console.error(e);
@@ -129,12 +144,12 @@
         function resetGame() {
             if (game && isWorkerReady) {
                 game.reset();
-                aiWorker.postMessage({ type: 'reset' }); // Workerの盤面もリセット
-                
+                aiWorker.postMessage({ type: 'reset' });
+
                 selectedCell = null;
                 selectedHand = null;
                 isAiThinking = false;
-                document.getElementById('depth-info').innerText = ''; 
+                document.getElementById('depth-info').innerText = '';
                 updateUI();
             }
         }
@@ -143,7 +158,7 @@
             const lines = boardStr.trim().split('\n');
             const goteMatch = lines[0].match(/ひよこ(\d+), きりん(\d+), ぞう(\d+)/);
             const goteHand = { chick: parseInt(goteMatch[1]), giraffe: parseInt(goteMatch[2]), elephant: parseInt(goteMatch[3]) };
-            
+
             const board = new Array(12).fill(null);
             for (let y = 0; y < 4; y++) {
                 const rowStr = lines[y + 2].substring(2);
@@ -152,16 +167,16 @@
                     if (pieceStr !== '.') board[y * 3 + x] = pieceStr;
                 }
             }
-            
+
             const senteMatch = lines[6].match(/ひよこ(\d+), きりん(\d+), ぞう(\d+)/);
             const senteHand = { chick: parseInt(senteMatch[1]), giraffe: parseInt(senteMatch[2]), elephant: parseInt(senteMatch[3]) };
-            
+
             return { goteHand, board, senteHand };
         }
 
         function updateUI() {
             const state = parseBoardString(game.get_board_string());
-            
+
             if (playerTurn === 1) {
                 renderHand(state.goteHand, 'top', false);
                 renderHand(state.senteHand, 'bottom', true);
@@ -169,7 +184,7 @@
                 renderHand(state.senteHand, 'top', false);
                 renderHand(state.goteHand, 'bottom', true);
             }
-            
+
             renderBoard(state.board);
             checkGameState();
         }
@@ -177,33 +192,33 @@
         function renderBoard(boardState) {
             const container = document.getElementById('board');
             container.innerHTML = '';
-            
-            const indices = playerTurn === 1 
-                ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] 
+
+            const indices = playerTurn === 1
+                ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
                 : [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
-            
+
             indices.forEach(i => {
                 const cell = document.createElement('div');
                 cell.className = 'cell bg-amber-100 rounded border border-amber-300 relative flex items-center justify-center cursor-pointer transition-colors';
-                
+
                 if (selectedCell === i) {
                     cell.classList.add('bg-yellow-200', 'ring-inset', 'ring-4', 'ring-yellow-400');
                 } else {
                     cell.classList.add('hover:bg-amber-50');
                 }
-                
+
                 const pieceChar = boardState[i];
                 if (pieceChar) {
                     const isGotePiece = pieceChar === pieceChar.toLowerCase();
                     const emoji = PIECE_MAP[pieceChar];
                     const isRotated = playerTurn === 1 ? isGotePiece : !isGotePiece;
-                    
+
                     const pieceEl = document.createElement('div');
                     pieceEl.className = `text-[3rem] leading-none drop-shadow-md select-none ${isRotated ? 'piece-gote' : ''}`;
                     pieceEl.innerText = emoji;
                     cell.appendChild(pieceEl);
                 }
-                
+
                 cell.onclick = () => handleCellClick(i, pieceChar);
                 container.appendChild(cell);
             });
@@ -212,33 +227,31 @@
         function renderHand(handState, position, isHuman) {
             const container = document.getElementById(`${position}-hand`);
             container.innerHTML = '';
-            
+
             HAND_KINDS.forEach(k => {
                 const count = handState[k.key];
                 const el = document.createElement('div');
                 el.className = `relative w-[4.5rem] h-[4.5rem] border-2 rounded-xl flex items-center justify-center transition-all ${isHuman && count > 0 ? 'cursor-pointer hover:scale-105 bg-white shadow-sm' : 'bg-gray-100 border-gray-200 opacity-80'}`;
-                
+
                 if (isHuman && selectedHand === k.val) {
                     el.classList.add('border-yellow-400', 'bg-yellow-50', 'ring-4', 'ring-yellow-200');
                 } else if (isHuman && count > 0) {
                     el.classList.add('border-gray-300');
                 }
-                
+
                 if (count > 0) {
                     const pieceEl = document.createElement('div');
                     pieceEl.className = `text-4xl select-none ${!isHuman ? 'piece-gote' : ''}`;
                     pieceEl.innerText = k.emoji;
                     el.appendChild(pieceEl);
-                    
+
                     const badge = document.createElement('span');
                     badge.className = 'absolute -bottom-2 -right-2 bg-gray-800 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center shadow';
                     badge.innerText = count;
                     el.appendChild(badge);
                 }
-                
-                if (isHuman) {
-                    el.onclick = () => handleHandClick(k.val, count);
-                }
+
+                if (isHuman) el.onclick = () => handleHandClick(k.val, count);
                 container.appendChild(el);
             });
         }
@@ -252,8 +265,8 @@
 
         function handleCellClick(sq, pieceChar) {
             if (game.get_turn() !== playerTurn || game.get_winner() !== -1) return;
-            
-            const isMyPiece = playerTurn === 1 
+
+            const isMyPiece = playerTurn === 1
                 ? pieceChar && pieceChar === pieceChar.toUpperCase()
                 : pieceChar && pieceChar === pieceChar.toLowerCase();
 
@@ -263,8 +276,7 @@
                 updateUI();
                 return;
             }
-            
-            // ★ 人間の指し手をUI盤面に適用し、成功したらWorkerの盤面にも同期させる
+
             if (selectedCell !== null) {
                 if (game.apply_human_move(selectedCell, sq)) {
                     aiWorker.postMessage({ type: 'human_move', from: selectedCell, to: sq });
@@ -283,7 +295,7 @@
         function checkGameState() {
             const status = game.get_winner();
             const msgEl = document.getElementById('message');
-            
+
             if (status === 1 || status === 2) {
                 if (status === playerTurn) {
                     msgEl.innerHTML = "🎉 <span class='text-red-600'>あなたの勝ちです！</span>";
@@ -295,47 +307,44 @@
                 msgEl.innerHTML = "🤝 千日手（引き分け）です";
                 return;
             }
-            
+
             if (game.get_turn() === playerTurn) {
                 msgEl.innerHTML = "🐥 あなたの番です";
             } else {
                 msgEl.innerHTML = "🐶 AIが思考中...";
                 if (!isAiThinking && isWorkerReady) {
                     isAiThinking = true;
-                    // UIスレッドをブロックせず、Workerに探索を依頼する
-                    aiWorker.postMessage({ type: 'search', time_limit: 2000 });
+                    aiWorker.postMessage({ type: 'search', time_limit: 1000 });
                 }
             }
         }
 
-        // WorkerからAIの思考結果を受け取ったときの処理
         function handleAiResult(jsonStr) {
             try {
                 const result = JSON.parse(jsonStr);
                 const moveStr = result.move_text;
                 const depth = result.depth;
-                
+
                 if (moveStr === "投了") {
                     document.getElementById('message').innerHTML = "🏳️ <span class='text-red-600'>AIが投了しました！あなたの勝ちです！</span>";
                     isAiThinking = false;
                     return;
                 }
-                
-                // ★ AIがWorker内で指した手を、UIの盤面にも適用(同期)する
+
                 if (result.is_drop) {
                     game.apply_human_drop(result.kind, result.to);
                 } else {
                     game.apply_human_move(result.from, result.to);
                 }
-                
+
                 console.log(`AIの指し手: ${moveStr} (深さ: ${depth})`);
                 document.getElementById('depth-info').innerText = `AIの探索深さ: ${depth} 手先`;
-                
+
             } catch (e) {
                 console.error("AI思考結果の処理中にエラーが発生しました:", e);
                 document.getElementById('message').innerHTML = "😵 <span class='text-blue-600'>AIがエラーで停止しました</span>";
             }
-            
+
             selectedCell = null;
             selectedHand = null;
             isAiThinking = false;
@@ -345,4 +354,5 @@
         run();
     </script>
 </body>
+
 </html>
