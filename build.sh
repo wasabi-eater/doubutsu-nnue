@@ -12,26 +12,31 @@ curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 echo "=== 3. WASMのマルチスレッドビルド実行 ==="
 wasm-pack build --target web --release
 
-echo "=== 3.5. ブラウザネイティブESMのパス修正 (Node.jsによる完全版) ==="
-
-cat << 'EOF' > fix_paths.js
+echo "=== 3.5. ブラウザネイティブESMのパス修正 (完全記号レス版) ==="
+cat > fix_paths.js << 'EOF'
 const fs = require('fs');
 const path = require('path');
 function fixImports(dir) {
-if (!fs.existsSync(dir)) return;
-fs.readdirSync(dir).forEach(file => {
-const fullPath = path.join(dir, file);
-if (fs.statSync(fullPath).isDirectory()) {
-fixImports(fullPath);
-} else if (fullPath.endsWith('.js')) {
-let content = fs.readFileSync(fullPath, 'utf8');
-// ../../ という曖昧なパスを、確実に ../../doubutsu_nnue.js に書き換える
-content = content.replace(/from\s+['"]../../['"]/g, "from '../../doubutsu_nnue.js'");
-content = content.replace(/from\s+['"]../../doubutsu[_-]nnue['"]/g, "from '../../doubutsu_nnue.js'");
-fs.writeFileSync(fullPath, content);
-console.log('✅ パスを修正しました: ' + fullPath);
-}
-});
+    if (!fs.existsSync(dir)) return;
+    fs.readdirSync(dir).forEach(file => {
+        const fullPath = path.join(dir, file);
+        if (fs.statSync(fullPath).isDirectory()) {
+            fixImports(fullPath);
+        } else if (fullPath.endsWith('.js')) {
+            let content = fs.readFileSync(fullPath, 'utf8');
+            const target = "from '../../doubutsu_nnue.js'";
+
+            content = content.replaceAll("from '../../'", target);
+            content = content.replaceAll('from "../../"', target);
+            content = content.replaceAll("from '../../doubutsu_nnue'", target);
+            content = content.replaceAll('from "../../doubutsu_nnue"', target);
+            content = content.replaceAll("from '../../doubutsu-nnue'", target);
+            content = content.replaceAll('from "../../doubutsu-nnue"', target);
+            
+            fs.writeFileSync(fullPath, content);
+            console.log('パスを修正しました: ' + fullPath);
+        }
+    });
 }
 fixImports('pkg/snippets');
 EOF
