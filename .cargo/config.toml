@@ -12,6 +12,12 @@ rustflags = [
     "link-arg=--export=__heap_base",
     "-C",
     "link-arg=--export=__data_end",
+    "-C",
+    "link-arg=--export=__wasm_init_tls",
+    "-C",
+    "link-arg=--export=__tls_base",
+    "-C",
+    "link-arg=--export=__tls_size",
 ]
 
 [unstable]
