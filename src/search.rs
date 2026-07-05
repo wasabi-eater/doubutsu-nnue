@@ -80,6 +80,7 @@ pub fn search_best_move(
             let mut thread_history = game_history.to_vec();
             let mut thread_nodes = 0; // スレッドごとの累計ノード数
 
+            // ヘルパースレッドにわざと浅い深さを読ませる処理は、
             // 制限時間が短い場合には効率が悪いため削除し、全スレッドで全力探索させる
             for depth in 1..=limits.max_depth {
                 let mut search = Search {
@@ -111,7 +112,6 @@ pub fn search_best_move(
                     best_move = current_best_move;
                     best_score = score;
                     reached_depth = depth;
-
 
                     let elapsed_ms = start_time.elapsed().as_millis() as u64;
                     let nps = (*search.nodes as u64 * 1000).checked_div(elapsed_ms).unwrap_or(0);
@@ -202,7 +202,7 @@ impl Search<'_, '_, '_, '_> {
         if self.aborted {
             return 0;
         }
-        *self.nodes += 1;
+        *self.nodes += 1; // ★修正: 参照外しでカウント
 
         if let Some(winner) = board.winner() {
             return if winner == board.side_to_move {
@@ -228,6 +228,7 @@ impl Search<'_, '_, '_, '_> {
             return 0;
         }
 
+        // 評価関数は常に「先手から見たスコア」を返すため、探索ノードの手番視点に変換する
         let eval = current_acc.evaluate(self.nnue_weights);
         let stand_pat = if board.side_to_move == Player::Sente {
             eval
@@ -426,10 +427,19 @@ impl Search<'_, '_, '_, '_> {
                     return -800;
                 }
             }
+
+            // 0番(メイン)スレッドは王道の順序で探索し、
+            // 1番以降(ヘルパー)スレッドは「静かな手」の探索順序をスレッドごとに散らす。
+            // 良い手のオーダリングを破壊しないよう、ノイズは小さな値(0〜99)に留める。
+            if self.thread_id > 0 {
+                // 手のビットデータとスレッドIDを掛け合わせて簡単な擬似乱数を作る
+                let noise =
+                    ((m.0 as usize ^ self.thread_id).wrapping_mul(0x9E3779B9) >> 16) as i32 % 100;
+                return -noise;
+            }
+
             0
         });
-
-        // Lazy SMPは、ロックフリー置換表(TT)の非同期共有だけで十分に機能します。
 
         let mut best_score = -30000;
         let mut best_move = moves.first().copied().unwrap_or(Move(0));

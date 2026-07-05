@@ -109,7 +109,7 @@ fn play_vs_human(
 ) {
     let mut board = Board::initial_position();
     let limits = SearchLimits {
-        max_time: Duration::from_millis(1000),
+        max_time: Duration::from_millis(2000),
         max_depth: 31,
     };
 
