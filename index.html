@@ -315,7 +315,7 @@
                 if (!isAiThinking && isWorkerReady) {
                     isAiThinking = true;
                     // 時間を長く設定すればするほど、マルチスレッドの力が爆発します
-                    aiWorker.postMessage({ type: 'search', time_limit: 1000 });
+                    aiWorker.postMessage({ type: 'search', time_limit: 2000 });
                 }
             }
         }
