@@ -10,6 +10,7 @@ use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::{Move, generate_moves};
 use crate::nnue::{Accumulator, NnueWeights};
 use crate::zobrist::{TTEntry, TranspositionTable, ZobristTable};
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,10 +68,19 @@ pub fn search_best_move(
     let active_features = board.extract_all_features();
     let initial_acc = Accumulator::refresh(nnue_weights, &active_features);
 
+    #[cfg(not(target_arch = "wasm32"))]
     let num_threads = rayon::current_num_threads().max(1);
 
-    let thread_results: Vec<_> = (0..num_threads)
-        .into_par_iter()
+    #[cfg(target_arch = "wasm32")]
+    let num_threads = 1;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let thread_iter = (0..num_threads).into_par_iter();
+
+    #[cfg(target_arch = "wasm32")]
+    let thread_iter = std::iter::once(0);
+
+    let thread_results: Vec<_> = thread_iter
         .map(|thread_id| {
             let mut best_move = default_move;
             let mut best_score = 0;

@@ -1,6 +1,5 @@
 use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::Move;
-// ★追加: アトミック操作のモジュール
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct XorShift64 {

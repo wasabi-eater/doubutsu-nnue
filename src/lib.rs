@@ -14,8 +14,6 @@ use nnue::NnueWeights;
 use search::{SearchLimits, search_best_move};
 use zobrist::{TranspositionTable, ZobristTable};
 
-pub use wasm_bindgen_rayon::init_thread_pool;
-
 fn sq_to_string(sq: u8) -> String {
     let col = (b'A' + (sq % 3)) as char;
     let row = (b'1' + (sq / 3)) as char;
