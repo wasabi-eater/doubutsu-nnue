@@ -1,5 +1,4 @@
-// ★修正: パッケージ名を 'doubutsu_nnue.js' に変更
-import init, { initThreadPool, AnimalShogiWasm } from './pkg/doubutsu_nnue.js';
+import init, { AnimalShogiWasm } from './pkg/doubutsu_nnue.js';
 
 let game = null;
 
@@ -9,9 +8,6 @@ self.onmessage = async (e) => {
     if (msg.type === 'init') {
         try {
             await init();
-            const hardwareConcurrency = navigator.hardwareConcurrency || 4;
-            await initThreadPool(hardwareConcurrency);
-            
             game = new AnimalShogiWasm();
             self.postMessage({ type: 'ready' });
         } catch (err) {
