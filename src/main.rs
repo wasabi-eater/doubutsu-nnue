@@ -3,7 +3,6 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// ★並列化のためのモジュールをインポート
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -66,6 +65,7 @@ fn main() {
         println!("1: 学習データ生成 (AI同士の自動対局を100回並列で行う)");
         println!("2: 対人戦 (あなた: 先手 🐥 vs AI: 後手 🐶)");
         println!("3: 対人戦 (AI: 先手 🐥 vs あなた: 後手 🐶)");
+        println!("4: AI同士の真剣勝負 (AI: 先手 🐥 vs AI: 後手 🐶)");
         print!("> ");
         io::stdout().flush().unwrap();
 
@@ -77,7 +77,6 @@ fn main() {
 
     let z_table = ZobristTable::new();
 
-    // ★ 修正: エラー内容を握りつぶさずにプリントする
     let nnue_weights = NnueWeights::load_from_file("nnue_weights.bin").unwrap_or_else(|e| {
         if mode != 1 {
             println!("⚠️ 学習済みの重みの読み込みに失敗しました: {:?}", e);
@@ -96,7 +95,90 @@ fn main() {
             let mut tt = TranspositionTable::new(1024 * 1024);
             play_vs_human(&z_table, &mut tt, &nnue_weights, Player::Gote)
         }
+        4 => {
+            let mut tt = TranspositionTable::new(1024 * 1024);
+            play_ai_vs_ai(&z_table, &mut tt, &nnue_weights)
+        }
         _ => println!("不正な入力です。終了します。"),
+    }
+}
+
+// --- 🎮 AI同士の真剣勝負モード ---
+fn play_ai_vs_ai(z_table: &ZobristTable, tt: &mut TranspositionTable, weights: &NnueWeights) {
+    let mut board = Board::initial_position();
+    let limits = SearchLimits {
+        max_time: Duration::from_millis(2000), // 1手2秒の全力探索
+        max_depth: 64,                         // 深さ制限は事実上なし
+    };
+
+    println!("\n🔥 AI同士の真剣勝負を開始します！ 🔥");
+
+    let mut turn_count = 1;
+    let mut game_history: Vec<(u64, Board)> = Vec::new();
+
+    loop {
+        println!("\n====================================");
+        println!(
+            "手数: {}手目 ({})",
+            turn_count,
+            if board.side_to_move == Player::Sente {
+                "先手"
+            } else {
+                "後手"
+            }
+        );
+        print_board(&board);
+
+        let current_hash = board.compute_initial_hash(z_table);
+
+        let count = game_history
+            .iter()
+            .filter(|&&(h, ref b)| h == current_hash && *b == board)
+            .count();
+        if count >= 2 {
+            println!("\n====================================");
+            println!("千日手が成立しました。引き分けです！");
+            break;
+        }
+
+        let mut moves = Vec::new();
+        generate_moves(&board, &mut moves);
+        if moves.is_empty() {
+            println!(
+                "合法手がありません。{} の負けです。",
+                if board.side_to_move == Player::Sente {
+                    "先手"
+                } else {
+                    "後手"
+                }
+            );
+            break;
+        }
+
+        println!("\n🤖 AIが思考中...");
+        let best_move = search_best_move(&board, z_table, tt, weights, &limits, &game_history).0;
+
+        println!("💡 AIの指し手: {}", move_to_string(best_move));
+
+        game_history.push((current_hash, board.clone()));
+        board.make_move(best_move, z_table, current_hash);
+
+        if let Some(w) = board.winner() {
+            println!("\n====================================");
+            println!("最終盤面:");
+            print_board(&board);
+            match w {
+                Player::Sente => println!("🎉 先手の勝利です！"),
+                Player::Gote => println!("🎉 後手の勝利です！"),
+            }
+            break;
+        }
+
+        turn_count += 1;
+        if turn_count > 200 {
+            println!("200手を超えました。引き分けです。");
+            break;
+        }
     }
 }
 
@@ -316,7 +398,7 @@ fn save_training_data_safe(
         // 1. そのまま
         write_record(&mut file, target_score, &record.features);
 
-        // 2. 左右反転
+        // 2. 左右反転 (スコアは変わらない)
         let flipped: Vec<usize> = record
             .features
             .iter()
@@ -324,11 +406,11 @@ fn save_training_data_safe(
             .collect();
         write_record(&mut file, target_score, &flipped);
 
-        // 3. 180度回転
+        // 3. 180度回転 (先手と後手の陣地が完全に入れ替わるため、スコアの符号を反転させる！)
         let rotated: Vec<usize> = record.features.iter().map(|&f| rotate_180(f)).collect();
         write_record(&mut file, -target_score, &rotated);
 
-        // 4. 180度回転 ＋ 左右反転
+        // 4. 180度回転 ＋ 左右反転 (上記同様、スコアの符号を反転)
         let flipped_rotated: Vec<usize> = rotated.iter().map(|&f| flip_horizontal(f)).collect();
         write_record(&mut file, -target_score, &flipped_rotated);
     }
