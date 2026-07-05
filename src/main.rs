@@ -37,7 +37,7 @@ impl XorShift64 {
             .unwrap()
             .as_nanos() as u64;
 
-        // 時刻に加えて、IDに大きな素数(黄金比)を掛けたものをXORで混ぜ合わせる
+        // これにより、複数スレッドが全く同じ時刻に初期化されてもシード値が確実にバラバラになる
         let seed = time_seed ^ (id.wrapping_mul(0x9E3779B97F4A7C15));
 
         Self { state: seed.max(1) }
@@ -76,7 +76,8 @@ fn main() {
     }
 
     let z_table = ZobristTable::new();
-    
+
+    // ★ 修正: エラー内容を握りつぶさずにプリントする
     let nnue_weights = NnueWeights::load_from_file("nnue_weights.bin").unwrap_or_else(|e| {
         if mode != 1 {
             println!("⚠️ 学習済みの重みの読み込みに失敗しました: {:?}", e);
@@ -108,7 +109,7 @@ fn play_vs_human(
 ) {
     let mut board = Board::initial_position();
     let limits = SearchLimits {
-        max_time: Duration::from_millis(2000),
+        max_time: Duration::from_millis(1000),
         max_depth: 31,
     };
 
@@ -212,7 +213,6 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
 
     let completed_games = Arc::new(AtomicUsize::new(0));
 
-    // ★修正: アンダーバー (_) ではなく、ゲームID (game_id) を引数として受け取る
     (1..=num_games).into_par_iter().for_each(|game_id| {
         let mut board = Board::initial_position();
         let mut turn_count = 1;
@@ -222,13 +222,12 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
 
         let mut tt = TranspositionTable::new(1024 * 512);
 
-        // game_idを渡して、スレッドごとに確実に異なるシード値を生成する
         let mut rng = XorShift64::new(game_id as u64);
 
         let random_plies = rng.next_usize(3) + 1;
 
         let limits = SearchLimits {
-            max_time: Duration::from_millis(100),
+            max_time: Duration::from_millis(50),
             max_depth: 11,
         };
 
@@ -312,14 +311,12 @@ fn save_training_data_safe(
     let mut file = file_mutex.lock().unwrap();
 
     for record in records {
-        let target_score = if record.side_to_move == Player::Sente {
-            sente_score
-        } else {
-            -sente_score
-        };
+        let target_score = sente_score;
 
+        // 1. そのまま
         write_record(&mut file, target_score, &record.features);
 
+        // 2. 左右反転
         let flipped: Vec<usize> = record
             .features
             .iter()
@@ -327,11 +324,13 @@ fn save_training_data_safe(
             .collect();
         write_record(&mut file, target_score, &flipped);
 
+        // 3. 180度回転
         let rotated: Vec<usize> = record.features.iter().map(|&f| rotate_180(f)).collect();
-        write_record(&mut file, target_score, &rotated);
+        write_record(&mut file, -target_score, &rotated);
 
+        // 4. 180度回転 ＋ 左右反転
         let flipped_rotated: Vec<usize> = rotated.iter().map(|&f| flip_horizontal(f)).collect();
-        write_record(&mut file, target_score, &flipped_rotated);
+        write_record(&mut file, -target_score, &flipped_rotated);
     }
 }
 
@@ -350,6 +349,7 @@ fn flip_horizontal(f: usize) -> usize {
         let new_sq = y * 3 + (2 - x);
         f - sq + new_sq
     } else {
+        // ★修正: 手番フラグ(132, 133)は左右反転しても変わらない
         f
     }
 }
@@ -364,8 +364,11 @@ fn rotate_180(f: usize) -> usize {
         let new_player_idx = 1 - player_idx;
 
         new_player_idx * 60 + kind_idx * 12 + new_sq
-    } else {
+    } else if f < 132 {
         if f < 126 { f + 6 } else { f - 6 }
+    } else {
+        // ★追加: 盤面を180度回転すると先手後手も入れ替わるため、手番フラグも反転させる
+        if f == 132 { 133 } else { 132 }
     }
 }
 

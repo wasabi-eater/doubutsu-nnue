@@ -1,5 +1,3 @@
-// 先ほど定義した Board 構造体に対する実装 (impl Board) の続きです
-
 use crate::board::{Board, Player, PieceKind, get_piece_index};
 use crate::move_gen::Move;
 use crate::zobrist::ZobristTable;
@@ -8,6 +6,8 @@ use crate::zobrist::ZobristTable;
 // どうぶつ将棋の特徴量は全部で132個で収まります
 // 0..119: 盤上の駒 (プレイヤー2 × 駒種5 × マス12)
 // 120..131: 持ち駒の状態 (プレイヤー2 × (ひよこ2 + きりん2 + ぞう2))
+// 132: 先手番フラグ
+// 133: 後手番フラグ
 
 #[inline]
 pub fn get_board_feature(player: Player, kind: PieceKind, sq: usize) -> usize {
@@ -31,17 +31,17 @@ pub fn get_hand_feature(player: Player, kind: PieceKind, count: u8) -> usize {
 }
 
 // --- 差分更新の記録用構造体 ---
-// 1手で変わる特徴量は最大でも4つ程度なので、固定長配列でヒープ確保を回避します
+// ★修正: 手番の更新処理が増えるため、配列の容量を4から8に増やす
 pub struct FeatureUpdate {
-    pub added: [usize; 4],
+    pub added: [usize; 8],
     pub added_count: usize,
-    pub removed: [usize; 4],
+    pub removed: [usize; 8],
     pub removed_count: usize,
 }
 
 impl FeatureUpdate {
     pub fn new() -> Self {
-        Self { added: [0; 4], added_count: 0, removed: [0; 4], removed_count: 0 }
+        Self { added: [0; 8], added_count: 0, removed: [0; 8], removed_count: 0 }
     }
     #[inline]
     pub fn add(&mut self, feature: usize) {
@@ -61,8 +61,8 @@ impl Board {
         let me = self.side_to_move;
         let opponent = me.opponent();
         
-        let to_sq = m.sq_to() as usize;
-        let to_bit = Board::square_bit(to_sq);
+        let sq_to = m.sq_to() as usize;
+        let to_bit = Board::square_bit(sq_to);
         let piece_kind = m.piece_kind();
         
         let mut update = FeatureUpdate::new();
@@ -93,7 +93,7 @@ impl Board {
             // 盤面に駒が現れる
             let p_idx = get_piece_index(me, piece_kind);
             self.piece_bbs[p_idx] |= to_bit;
-            update.add(get_board_feature(me, piece_kind, to_sq));
+            update.add(get_board_feature(me, piece_kind, sq_to));
             
         } else {
             // 2. 盤上の駒の移動の場合
@@ -109,12 +109,12 @@ impl Board {
             let opponent_occupied = self.occupied_by(opponent);
             if (opponent_occupied & to_bit) != 0 {
                 // 取った駒の種類を特定する
-                for kind in PieceKind::ALL {
+                for kind in [PieceKind::Lion, PieceKind::Giraffe, PieceKind::Elephant, PieceKind::Chick, PieceKind::Hen] {
                     let opp_idx = get_piece_index(opponent, kind);
                     if (self.piece_bbs[opp_idx] & to_bit) != 0 {
                         // 敵の盤面から駒を消す
                         self.piece_bbs[opp_idx] &= !to_bit;
-                        update.remove(get_board_feature(opponent, kind, to_sq));
+                        update.remove(get_board_feature(opponent, kind, sq_to));
                         
                         // 自分の持ち駒に加える (にわとりを取った場合はひよこに戻る)
                         let captured_kind = if kind == PieceKind::Hen { PieceKind::Chick } else { kind };
@@ -154,11 +154,17 @@ impl Board {
             
             let place_idx = get_piece_index(me, place_kind);
             self.piece_bbs[place_idx] |= to_bit;
-            update.add(get_board_feature(me, place_kind, to_sq));
+            update.add(get_board_feature(me, place_kind, sq_to));
         }
 
         // 3. 手番を交代する
         self.side_to_move = opponent;
+        
+        // ★追加: 手番フラグの特徴量も差分更新する
+        let old_turn_feature = if me == Player::Sente { 132 } else { 133 };
+        let new_turn_feature = if opponent == Player::Sente { 132 } else { 133 };
+        update.remove(old_turn_feature);
+        update.add(new_turn_feature);
         
         // -------------------------------------------------------------
         // ★ Zobrist ハッシュの魔法の更新 ★

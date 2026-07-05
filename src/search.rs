@@ -75,6 +75,7 @@ pub fn search_best_move(
             let mut thread_history = game_history.to_vec();
             let mut thread_nodes = 0; // スレッドごとの累計ノード数
 
+            // 制限時間が短い場合には効率が悪いため削除し、全スレッドで全力探索させる
             for depth in 1..=limits.max_depth {
                 let mut search = Search {
                     z_table,
@@ -199,7 +200,6 @@ impl Search<'_, '_, '_, '_> {
             };
         }
 
-        // 合法手を生成
         let mut moves = Vec::new();
         generate_moves(board, &mut moves);
 
@@ -216,7 +216,13 @@ impl Search<'_, '_, '_, '_> {
             return 0;
         }
 
-        let stand_pat = current_acc.evaluate(self.nnue_weights);
+        let eval = current_acc.evaluate(self.nnue_weights);
+        let stand_pat = if board.side_to_move == Player::Sente {
+            eval
+        } else {
+            -eval
+        };
+
         if stand_pat >= beta {
             return stand_pat;
         }
@@ -412,21 +418,7 @@ impl Search<'_, '_, '_, '_> {
             0
         });
 
-        // スレッドごとに調べる手の順番をずらし、探索を分散させる(Lazy SMP)
-        if ply == 0 && moves.len() > 1 && self.thread_id > 0 {
-            let shift_amount = self.thread_id % moves.len();
-            if shift_amount > 0 {
-                let mut shifted = Vec::with_capacity(moves.len());
-                shifted.push(moves[0]); // 最善手候補(TTの手など)は固定
-                let remaining = &moves[1..];
-                if !remaining.is_empty() {
-                    let actual_shift = shift_amount % remaining.len();
-                    shifted.extend_from_slice(&remaining[actual_shift..]);
-                    shifted.extend_from_slice(&remaining[..actual_shift]);
-                }
-                moves = shifted;
-            }
-        }
+        // Lazy SMPは、ロックフリー置換表(TT)の非同期共有だけで十分に機能します。
 
         let mut best_score = -30000;
         let mut best_move = moves.first().copied().unwrap_or(Move(0));

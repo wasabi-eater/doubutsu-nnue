@@ -7,11 +7,10 @@ import csv
 import os
 
 # --- 定数の定義 ---
-FEATURE_SIZE = 132
+FEATURE_SIZE = 134
 HIDDEN_SIZE = 128
 QUANT_SCALE = 128.0  # 2^7 = 128 (Rust側と一致)
 
-# スコアのスケール
 # 1.0(勝ち) を 600点 として学習させる。これによりRust側の整数探索で十分な解像度が得られる
 SCORE_SCALE = 600.0 
 
@@ -29,6 +28,7 @@ class AnimalShogiDataset(Dataset):
             for row in reader:
                 if not row:
                     continue
+                # ★修正: ターゲットを SCORE_SCALE 倍に引き伸ばす
                 target = float(row[0]) * SCORE_SCALE
                 
                 features = [int(x) for x in row[1:] if x.strip()]
@@ -59,8 +59,10 @@ class AnimalShogiNNUE(nn.Module):
     def forward(self, features):
         acc = self.feature_layer(features)
         
+        # ★修正: Rust側の clamp(0, 127) と厳密に一致させるため、127.0 / QUANT_SCALE を上限とする
         acc = torch.clamp(acc, min=0.0, max=127.0 / QUANT_SCALE)
         
+        # ★修正: 2乗(SCReLU)をやめ、シンプルな Clipped ReLU に戻す
         score = self.output_layer(acc)
         return score
 
@@ -83,7 +85,6 @@ def export_to_rust(model, filename):
             b_i16 = int(round(feature_b[hid_idx] * QUANT_SCALE))
             f.write(struct.pack("<h", b_i16))
 
-        # 隠れ層 -> 出力層 は i32 (4バイト) で保存する
         # SCORE_SCALE で値が大きくなっているため、i16ではオーバーフローする危険があるため
         for hid_idx in range(HIDDEN_SIZE):
             w_i32 = int(round(output_w[0, hid_idx] * QUANT_SCALE))
@@ -97,7 +98,7 @@ def export_to_rust(model, filename):
 
 # --- 4. メインの学習ループ ---
 def train_model():
-    dataset = AnimalShogiDataset("../training_data.csv")
+    dataset = AnimalShogiDataset("training_data.csv")
     
     batch_size = min(256, len(dataset))
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -126,7 +127,7 @@ def train_model():
             print(f"Epoch [{epoch}/{epochs}], Loss: {avg_loss:.6f}")
             
     print("--- 学習完了 ---")
-    export_to_rust(model, "../nnue_weights.bin")
+    export_to_rust(model, "nnue_weights.bin")
 
 if __name__ == "__main__":
     train_model()

@@ -1,19 +1,18 @@
 use std::fs::File;
-use std::io::{Read, Result, Cursor};
+use std::io::{Cursor, Read, Result};
 
 // --- 定数の定義 ---
-pub const FEATURE_SIZE: usize = 132;
+pub const FEATURE_SIZE: usize = 134;
 pub const HIDDEN_SIZE: usize = 128;
 
-// ★ 修正: SCReLUに最適化したスケール定数
 pub const WEIGHT_SCALE_BITS: i32 = 7; // 2^7 = 128
-pub const ACTIVATION_MAX: i16 = 127;  // 127 を 1.0 とみなす
+pub const ACTIVATION_MAX: i16 = 127; // 127 を 1.0 とみなす
 
 // --- ネットワークの重み ---
 pub struct NnueWeights {
     pub feature_weights: [[i16; HIDDEN_SIZE]; FEATURE_SIZE],
     pub feature_biases: [i16; HIDDEN_SIZE],
-    pub output_weights: [i32; HIDDEN_SIZE],
+    pub output_weights: [i32; HIDDEN_SIZE], // ★ここを i16 から i32 に変更
     pub output_bias: i32,
 }
 
@@ -23,17 +22,16 @@ impl NnueWeights {
         Self {
             feature_weights: [[0; HIDDEN_SIZE]; FEATURE_SIZE],
             feature_biases: [0; HIDDEN_SIZE],
-            output_weights: [0; HIDDEN_SIZE],
+            output_weights: [0; HIDDEN_SIZE], // 0はi32でも同じ
             output_bias: 0,
         }
     }
-    // Python側でエクスポートした nnue_weights.bin を読み込む関数
+
     pub fn load_from_file(path: &str) -> Result<Self> {
         let mut file = File::open(path)?;
-        Self::load_from_reader(&mut file)    
+        Self::load_from_reader(&mut file)
     }
 
-    // WASM向け: メモリ上のバイト配列からロードするメソッド
     pub fn load_from_slice(bytes: &[u8]) -> std::io::Result<Self> {
         let mut cursor = Cursor::new(bytes);
         Self::load_from_reader(&mut cursor)
@@ -47,7 +45,6 @@ impl NnueWeights {
             output_bias: 0,
         };
 
-        // 1. Feature -> Accumulator 重み (i16) を読み込む
         for feat_idx in 0..FEATURE_SIZE {
             for hid_idx in 0..HIDDEN_SIZE {
                 let mut buf = [0u8; 2];
@@ -56,7 +53,6 @@ impl NnueWeights {
             }
         }
 
-        // 2. Feature -> Accumulator バイアス (i16)
         for hid_idx in 0..HIDDEN_SIZE {
             let mut buf = [0u8; 2];
             reader.read_exact(&mut buf)?;
@@ -92,7 +88,8 @@ impl Accumulator {
         };
         for &feature_idx in active_features {
             for i in 0..HIDDEN_SIZE {
-                acc.values[i] = acc.values[i].saturating_add(weights.feature_weights[feature_idx][i]);
+                acc.values[i] =
+                    acc.values[i].saturating_add(weights.feature_weights[feature_idx][i]);
             }
         }
         acc
@@ -101,31 +98,31 @@ impl Accumulator {
     pub fn update(&mut self, weights: &NnueWeights, added: &[usize], removed: &[usize]) {
         for &feature_idx in removed {
             for i in 0..HIDDEN_SIZE {
-                self.values[i] = self.values[i].saturating_sub(weights.feature_weights[feature_idx][i]);
+                self.values[i] =
+                    self.values[i].saturating_sub(weights.feature_weights[feature_idx][i]);
             }
         }
         for &feature_idx in added {
             for i in 0..HIDDEN_SIZE {
-                self.values[i] = self.values[i].saturating_add(weights.feature_weights[feature_idx][i]);
+                self.values[i] =
+                    self.values[i].saturating_add(weights.feature_weights[feature_idx][i]);
             }
         }
     }
 
-    // シンプルな Clipped ReLU に戻す (ただし i32 の高精度は維持)
     pub fn evaluate(&self, weights: &NnueWeights) -> i32 {
-        let mut sum: i32 = weights.output_bias;
-        
+        // バイアスも16384倍(128 * 128)のスケールに合わせておく
+        let mut sum: i32 = weights.output_bias * (1 << WEIGHT_SCALE_BITS);
+
         for i in 0..HIDDEN_SIZE {
-            // 1. Clipped ReLU (0 ~ 127 に収める)
+            // Clipped ReLU として機能する (負の値を0にし、上限を127にクリップ)
             let activation = self.values[i].clamp(0, ACTIVATION_MAX) as i32;
-            
-            // 2. 重みと掛け合わせて足す (2乗しない)
             sum += activation * weights.output_weights[i];
         }
-        
-        // 最後に 2^7 で割って、元のスコアスケールに戻す
-        sum >>= WEIGHT_SCALE_BITS;
-        
+
+        // 16384 (2^14) で割って、元のスコア(600スケール)に戻す
+        sum >>= WEIGHT_SCALE_BITS * 2;
+
         sum
     }
 }
