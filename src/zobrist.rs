@@ -49,6 +49,7 @@ pub struct TTEntry {
     pub node_type: u8,
 }
 
+#[repr(align(64))]
 pub struct TTEntryAtomic {
     key_xor_data: AtomicU64,
     data: AtomicU64,

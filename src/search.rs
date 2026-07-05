@@ -78,19 +78,17 @@ pub fn search_best_move(
             let mut killer_moves = [[None; 2]; MAX_PLY];
 
             let mut thread_history = game_history.to_vec();
-            let mut thread_nodes = 0; // スレッドごとの累計ノード数
+            let mut thread_nodes = 0; 
 
-            // ヘルパースレッドにわざと浅い深さを読ませる処理は、
-            // 制限時間が短い場合には効率が悪いため削除し、全スレッドで全力探索させる
             for depth in 1..=limits.max_depth {
                 let mut search = Search {
                     z_table,
                     tt,
                     nnue_weights,
                     max_time: limits.max_time,
-                    nodes: &mut thread_nodes, // 参照を渡す
+                    nodes: &mut thread_nodes, 
                     start_time,
-                    history: &mut thread_history, // 参照を渡す
+                    history: &mut thread_history, 
                     killer_moves: &mut killer_moves,
                     aborted: false,
                     shared_abort: shared_abort.clone(),
@@ -101,7 +99,6 @@ pub fn search_best_move(
                     search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
 
                 if search.aborted {
-                    // 時間切れの場合、その深さの探索は完了していないので、到達深さは1つ前とする
                     if thread_id == 0 && depth > 1 {
                         reached_depth = depth - 1;
                     }
@@ -114,25 +111,25 @@ pub fn search_best_move(
                     reached_depth = depth;
 
                     let elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    let nps = (*search.nodes as u64 * 1000).checked_div(elapsed_ms).unwrap_or(0);
+                    let total_nodes = *search.nodes * num_threads;
+                    let nps = (total_nodes as u64 * 1000).checked_div(elapsed_ms).unwrap_or(0);
 
                     #[cfg(target_arch = "wasm32")]
                     console::log_1(
                         &format!(
-                            "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | NPS: {} / core",
-                            depth, score, *search.nodes, elapsed_ms, nps
+                            "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | Total NPS: {}",
+                            depth, score, total_nodes, elapsed_ms, nps
                         )
                         .into(),
                     );
 
                     #[cfg(not(target_arch = "wasm32"))]
                     println!(
-                        "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | NPS: {} / core",
-                        depth, score, *search.nodes, elapsed_ms, nps
+                        "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | Total NPS: {}",
+                        depth, score, total_nodes, elapsed_ms, nps
                     );
                 }
 
-                // 詰みを発見したら全スレッドを即座に止める
                 if score.abs() >= 19000 {
                     shared_abort.store(true, Ordering::Relaxed);
                     break;
@@ -202,7 +199,7 @@ impl Search<'_, '_, '_, '_> {
         if self.aborted {
             return 0;
         }
-        *self.nodes += 1; // ★修正: 参照外しでカウント
+        *self.nodes += 1; 
 
         if let Some(winner) = board.winner() {
             return if winner == board.side_to_move {
@@ -228,7 +225,6 @@ impl Search<'_, '_, '_, '_> {
             return 0;
         }
 
-        // 評価関数は常に「先手から見たスコア」を返すため、探索ノードの手番視点に変換する
         let eval = current_acc.evaluate(self.nnue_weights);
         let stand_pat = if board.side_to_move == Player::Sente {
             eval
@@ -412,7 +408,6 @@ impl Search<'_, '_, '_, '_> {
             if !m.is_drop() {
                 let to_bit = 1 << m.sq_to();
                 if (opponent_occupied & to_bit) != 0 {
-                    // LVA (Least Valuable Attacker): 弱い駒で取る手ほど優先する
                     let move_score = 10000 - piece_value(m.piece_kind());
                     return -move_score;
                 }
@@ -428,13 +423,14 @@ impl Search<'_, '_, '_, '_> {
                 }
             }
 
-            // 0番(メイン)スレッドは王道の順序で探索し、
-            // 1番以降(ヘルパー)スレッドは「静かな手」の探索順序をスレッドごとに散らす。
-            // 良い手のオーダリングを破壊しないよう、ノイズは小さな値(0〜99)に留める。
             if self.thread_id > 0 {
-                // 手のビットデータとスレッドIDを掛け合わせて簡単な擬似乱数を作る
-                let noise =
-                    ((m.0 as usize ^ self.thread_id).wrapping_mul(0x9E3779B9) >> 16) as i32 % 100;
+                let mut noise =
+                    ((m.0 as usize ^ self.thread_id).wrapping_mul(0x9E3779B9) >> 16) as i32;
+                if ply == 0 {
+                    noise %= 2000;
+                } else {
+                    noise %= 50;
+                }
                 return -noise;
             }
 
