@@ -98,7 +98,7 @@ def export_to_rust(model, filename):
 
 # --- 4. メインの学習ループ ---
 def train_model():
-    dataset = AnimalShogiDataset("training_data.csv")
+    dataset = AnimalShogiDataset("../training_data.csv")
     
     batch_size = min(256, len(dataset))
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -127,7 +127,7 @@ def train_model():
             print(f"Epoch [{epoch}/{epochs}], Loss: {avg_loss:.6f}")
             
     print("--- 学習完了 ---")
-    export_to_rust(model, "nnue_weights.bin")
+    export_to_rust(model, "../nnue_weights.bin")
 
 if __name__ == "__main__":
     train_model()
