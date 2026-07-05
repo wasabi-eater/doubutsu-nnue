@@ -19,14 +19,14 @@ pub struct SearchLimits {
     pub max_depth: u8,
 }
 
-struct Search<'zt, 'tt, 'nw> {
+struct Search<'a, 'zt, 'tt, 'nw> {
     z_table: &'zt ZobristTable,
     tt: &'tt TranspositionTable,
     nnue_weights: &'nw NnueWeights,
     start_time: Instant,
     max_time: Duration,
-    nodes: usize,
-    history: Vec<(u64, Board)>,
+    nodes: &'a mut usize,
+    history: &'a mut Vec<(u64, Board)>,
     killer_moves: &'tt mut [[Option<Move>; 2]; MAX_PLY],
     aborted: bool,
     shared_abort: Arc<AtomicBool>,
@@ -72,42 +72,31 @@ pub fn search_best_move(
             let mut reached_depth = 0;
             let mut killer_moves = [[None; 2]; MAX_PLY];
 
-            let depth_offset = if thread_id == 0 { 0 } else { thread_id % 3 };
+            let mut thread_history = game_history.to_vec();
+            let mut thread_nodes = 0; // スレッドごとの累計ノード数
 
             for depth in 1..=limits.max_depth {
-                let actual_depth = depth as i32 - depth_offset as i32;
-                if actual_depth < 1 {
-                    continue;
-                }
-                let actual_depth = actual_depth as u8;
-
                 let mut search = Search {
                     z_table,
                     tt,
                     nnue_weights,
                     max_time: limits.max_time,
-                    nodes: 0,
+                    nodes: &mut thread_nodes, // 参照を渡す
                     start_time,
-                    history: game_history.to_vec(),
+                    history: &mut thread_history, // 参照を渡す
                     killer_moves: &mut killer_moves,
                     aborted: false,
                     shared_abort: shared_abort.clone(),
                     thread_id,
                 };
 
-                let (score, current_best_move) = search.search_pvs(
-                    board,
-                    actual_depth,
-                    0,
-                    -30000,
-                    30000,
-                    &initial_acc,
-                    current_hash,
-                );
+                let (score, current_best_move) =
+                    search.search_pvs(board, depth, 0, -30000, 30000, &initial_acc, current_hash);
 
                 if search.aborted {
-                    if thread_id == 0 && actual_depth > 1 {
-                        reached_depth = actual_depth - 1;
+                    // 時間切れの場合、その深さの探索は完了していないので、到達深さは1つ前とする
+                    if thread_id == 0 && depth > 1 {
+                        reached_depth = depth - 1;
                     }
                     break;
                 }
@@ -115,26 +104,22 @@ pub fn search_best_move(
                 if thread_id == 0 {
                     best_move = current_best_move;
                     best_score = score;
-                    reached_depth = actual_depth;
+                    reached_depth = depth;
 
-                    // ★追加: 開発者コンソールに深さと計算速度(NPS)を出力
                     let elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    let nps = if elapsed_ms > 0 {
-                        search.nodes as u64 * 1000 / elapsed_ms
-                    } else {
-                        0
-                    };
+                    let nps = (*search.nodes as u64 * 1000).checked_div(elapsed_ms).unwrap_or(0);
                     console::log_1(
                         &format!(
                             "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | NPS: {} / core",
-                            actual_depth, score, search.nodes, elapsed_ms, nps
+                            depth, score, *search.nodes, elapsed_ms, nps
                         )
                         .into(),
                     );
                 }
 
+                // 詰みを発見したら全スレッドを即座に止める
                 if score.abs() >= 19000 {
-                    shared_abort.store(true, Ordering::Relaxed); // 詰みを見つけたら全スレッド停止
+                    shared_abort.store(true, Ordering::Relaxed);
                     break;
                 }
             }
@@ -147,14 +132,12 @@ pub fn search_best_move(
     (main_result.0, main_result.1)
 }
 
-impl Search<'_, '_, '_> {
+impl Search<'_, '_, '_, '_> {
     fn check_time(&mut self) {
-        if self.nodes & 2047 == 0 {
-            // 共有フラグをチェックし、他のスレッドが終了していたら自分も止まる
+        if *self.nodes & 2047 == 0 {
             if self.shared_abort.load(Ordering::Relaxed) {
                 self.aborted = true;
             } else if self.thread_id == 0 && self.start_time.elapsed() >= self.max_time {
-                // メインスレッドが時間切れになったら、全スレッドに停止指令を出す
                 self.shared_abort.store(true, Ordering::Relaxed);
                 self.aborted = true;
             }
@@ -204,7 +187,7 @@ impl Search<'_, '_, '_> {
         if self.aborted {
             return 0;
         }
-        self.nodes += 1;
+        *self.nodes += 1;
 
         if let Some(winner) = board.winner() {
             return if winner == board.side_to_move {
@@ -328,7 +311,7 @@ impl Search<'_, '_, '_> {
         if self.aborted {
             return (0, Move(0));
         }
-        self.nodes += 1;
+        *self.nodes += 1;
         let alpha_orig = alpha;
 
         if let Some(winner) = board.winner() {
@@ -347,7 +330,6 @@ impl Search<'_, '_, '_> {
         }
 
         if self.can_capture_lion(board, &moves) {
-            // ライオンを取る手を特定してそれを返す
             let opponent = board.side_to_move.opponent();
             let opponent_lion_idx = get_piece_index(opponent, PieceKind::Lion);
             let opponent_lion_bb = board.piece_bbs[opponent_lion_idx];
@@ -429,7 +411,7 @@ impl Search<'_, '_, '_> {
             move_score
         });
 
-        // ★追加: スレッドごとに調べる手の順番をずらし、探索を分散させる(Lazy SMPのキモ)
+        // スレッドごとに調べる手の順番をずらし、探索を分散させる(Lazy SMP)
         if ply == 0 && moves.len() > 1 && self.thread_id > 0 {
             let shift_amount = self.thread_id % moves.len();
             if shift_amount > 0 {
@@ -461,7 +443,7 @@ impl Search<'_, '_, '_> {
                 &feature_update.removed[..feature_update.removed_count],
             );
 
-            let mut score;
+            let score;
             if is_first_move {
                 let (s, _) = self.search_pvs(
                     &next_board,
@@ -518,11 +500,9 @@ impl Search<'_, '_, '_> {
                 }
                 if alpha >= beta {
                     let is_capture = !m.is_drop() && (opponent_occupied & (1 << m.sq_to())) != 0;
-                    if !is_capture && ply < MAX_PLY {
-                        if self.killer_moves[ply][0] != Some(m) {
-                            self.killer_moves[ply][1] = self.killer_moves[ply][0];
-                            self.killer_moves[ply][0] = Some(m);
-                        }
+                    if !is_capture && ply < MAX_PLY && self.killer_moves[ply][0] != Some(m) {
+                        self.killer_moves[ply][1] = self.killer_moves[ply][0];
+                        self.killer_moves[ply][0] = Some(m);
                     }
                     break;
                 }
