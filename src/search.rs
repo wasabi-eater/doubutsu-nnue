@@ -1,5 +1,10 @@
-use web_sys::console;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
+#[cfg(target_arch = "wasm32")]
 use web_time::{Duration, Instant};
+
+#[cfg(target_arch = "wasm32")]
+use web_sys::console;
 
 use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::{Move, generate_moves};
@@ -107,16 +112,23 @@ pub fn search_best_move(
                     best_score = score;
                     reached_depth = depth;
 
+
                     let elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    let nps = (*search.nodes as u64 * 1000)
-                        .checked_div(elapsed_ms)
-                        .unwrap_or(0);
+                    let nps = (*search.nodes as u64 * 1000).checked_div(elapsed_ms).unwrap_or(0);
+
+                    #[cfg(target_arch = "wasm32")]
                     console::log_1(
                         &format!(
                             "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | NPS: {} / core",
                             depth, score, *search.nodes, elapsed_ms, nps
                         )
                         .into(),
+                    );
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    println!(
+                        "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | NPS: {} / core",
+                        depth, score, *search.nodes, elapsed_ms, nps
                     );
                 }
 
@@ -341,7 +353,6 @@ impl Search<'_, '_, '_, '_> {
             let opponent = board.side_to_move.opponent();
             let opponent_lion_idx = get_piece_index(opponent, PieceKind::Lion);
             let opponent_lion_bb = board.piece_bbs[opponent_lion_idx];
-
             for m in &moves {
                 if !m.is_drop() && (opponent_lion_bb & (1 << m.sq_to())) != 0 {
                     return (20000 - ply as i32, *m);
