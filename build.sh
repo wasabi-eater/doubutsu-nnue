@@ -1,10 +1,14 @@
 #!/bin/bash
 set -e
 
-echo "=== 1. wasm-packのインストール ==="
+echo "=== 1. Rustのインストール ==="
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --y
+source "$HOME/.cargo/env"
+
+echo "=== 2. wasm-packのインストール ==="
 curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-echo "=== 2. WASMのビルド実行 ==="
+echo "=== 3. WASMのビルド実行 ==="
 wasm-pack build --target web --release
 
 echo "=== 3.5. ブラウザネイティブESMのパス修正 (完全網羅版) ==="
