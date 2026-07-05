@@ -107,7 +107,9 @@ pub fn search_best_move(
                     reached_depth = depth;
 
                     let elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    let nps = (*search.nodes as u64 * 1000).checked_div(elapsed_ms).unwrap_or(0);
+                    let nps = (*search.nodes as u64 * 1000)
+                        .checked_div(elapsed_ms)
+                        .unwrap_or(0);
                     console::log_1(
                         &format!(
                             "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | NPS: {} / core",
@@ -387,28 +389,27 @@ impl Search<'_, '_, '_, '_> {
 
         moves.sort_by_cached_key(|&m| {
             if Some(m) == tt_move {
-                return i32::MAX;
+                return -30000;
             }
-            let mut move_score = 0;
             if !m.is_drop() {
                 let to_bit = 1 << m.sq_to();
                 if (opponent_occupied & to_bit) != 0 {
-                    move_score += 10000 - piece_value(m.piece_kind());
-                    return move_score;
+                    // LVA (Least Valuable Attacker): 弱い駒で取る手ほど優先する
+                    let move_score = 10000 - piece_value(m.piece_kind());
+                    return -move_score;
                 }
                 if m.is_promote() {
-                    move_score += 5000;
-                    return move_score;
+                    return -5000;
                 }
             }
             if ply < MAX_PLY {
                 if Some(m) == self.killer_moves[ply][0] {
-                    return 900;
+                    return -900;
                 } else if Some(m) == self.killer_moves[ply][1] {
-                    return 800;
+                    return -800;
                 }
             }
-            move_score
+            0
         });
 
         // スレッドごとに調べる手の順番をずらし、探索を分散させる(Lazy SMP)
