@@ -3,6 +3,3 @@ rustflags = [
     "-C",
     "target-feature=+simd128"
 ]
-
-[unstable]
-build-std = ["panic_abort", "std"]
