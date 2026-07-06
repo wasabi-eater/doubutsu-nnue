@@ -36,7 +36,6 @@ impl XorShift64 {
             .unwrap()
             .as_nanos() as u64;
 
-        // これにより、複数スレッドが全く同じ時刻に初期化されてもシード値が確実にバラバラになる
         let seed = time_seed ^ (id.wrapping_mul(0x9E3779B97F4A7C15));
 
         Self { state: seed.max(1) }
@@ -59,6 +58,8 @@ fn main() {
 
     if args.iter().any(|arg| arg == "train") {
         mode = 1;
+    } else if args.iter().any(|arg| arg == "engine") {
+        mode = 5;
     } else {
         println!("=== 🦁 どうぶつ将棋AI 🐥 ===");
         println!("モードを選択してください:");
@@ -99,6 +100,7 @@ fn main() {
             let mut tt = TranspositionTable::new(1024 * 1024);
             play_ai_vs_ai(&z_table, &mut tt, &nnue_weights)
         }
+        5 => run_engine_mode(&z_table, &nnue_weights),
         _ => println!("不正な入力です。終了します。"),
     }
 }
@@ -182,6 +184,67 @@ fn play_ai_vs_ai(z_table: &ZobristTable, tt: &mut TranspositionTable, weights: &
     }
 }
 
+// --- 🤖 外部ツール連携用(USI風)エンジンモード ---
+fn run_engine_mode(z_table: &ZobristTable, weights: &NnueWeights) {
+    let tt = TranspositionTable::new(1024 * 1024);
+    let limits = SearchLimits {
+        max_time: Duration::from_millis(500),
+        max_depth: 64,
+    };
+
+    let mut board = Board::initial_position();
+    let mut game_history: Vec<(u64, Board)> = Vec::new();
+
+    loop {
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).unwrap_or(0) == 0 {
+            break;
+        }
+        let input = input.trim();
+
+        if input == "quit" {
+            break;
+        } else if input == "isready" {
+            println!("readyok");
+            io::stdout().flush().unwrap();
+        } else if input.starts_with("position moves") {
+            board = Board::initial_position();
+            game_history.clear();
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            for m_str in parts.iter().skip(2) {
+                if let Ok(m_val) = m_str.parse::<u16>() {
+                    let m = Move(m_val);
+                    let hash = board.compute_initial_hash(z_table);
+                    game_history.push((hash, board.clone()));
+                    board.make_move(m, z_table, hash);
+                }
+            }
+        } else if input == "go" {
+            let current_hash = board.compute_initial_hash(z_table);
+            let is_draw = game_history
+                .iter()
+                .filter(|&&(h, ref b)| h == current_hash && *b == board)
+                .count()
+                >= 2;
+
+            let mut moves = Vec::new();
+            generate_moves(&board, &mut moves);
+
+            // 終局判定
+            if is_draw || game_history.len() > 200 {
+                println!("bestmove 0 draw");
+            } else if board.winner().is_some() || moves.is_empty() {
+                println!("bestmove 0 loss");
+            } else {
+                let (best_move, _) =
+                    search_best_move(&board, z_table, &tt, weights, &limits, &game_history);
+                println!("bestmove {}", best_move.0);
+            }
+            io::stdout().flush().unwrap();
+        }
+    }
+}
+
 // --- 🎮 対人戦モード ---
 fn play_vs_human(
     z_table: &ZobristTable,
@@ -191,7 +254,7 @@ fn play_vs_human(
 ) {
     let mut board = Board::initial_position();
     let limits = SearchLimits {
-        max_time: Duration::from_millis(2000),
+        max_time: Duration::from_millis(1000),
         max_depth: 31,
     };
 
@@ -302,7 +365,7 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
         let mut game_records: Vec<PositionRecord> = Vec::new();
         let mut game_history: Vec<(u64, Board)> = Vec::new();
 
-        let mut tt = TranspositionTable::new(1024 * 512);
+        let tt = TranspositionTable::new(1024 * 512);
 
         let mut rng = XorShift64::new(game_id as u64);
 
@@ -341,7 +404,7 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
                 let random_idx = rng.next_usize(moves.len());
                 moves[random_idx]
             } else {
-                search_best_move(&board, z_table, &mut tt, weights, &limits, &game_history).0
+                search_best_move(&board, z_table, &tt, weights, &limits, &game_history).0
             };
 
             game_history.push((current_hash, board.clone()));
