@@ -73,8 +73,8 @@ if __name__ == "__main__":
     print("====================================\n")
     
     # ★対戦させる2つのエンジンのフォルダ名を指定
-    DIR_A = "engine_v1"
-    DIR_B = "engine_v2"
+    DIR_A = "../engine_v1"
+    DIR_B = "../engine_v2"
     
     try:
         engine_a = Engine("Version_1 (旧)", DIR_A)
