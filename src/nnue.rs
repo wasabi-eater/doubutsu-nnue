@@ -27,11 +27,13 @@ impl NnueWeights {
         }
     }
 
+    #[allow(unused)]
     pub fn load_from_file(path: &str) -> Result<Self> {
         let mut file = File::open(path)?;
         Self::load_from_reader(&mut file)
     }
 
+    #[allow(unused)]
     pub fn load_from_slice(bytes: &[u8]) -> std::io::Result<Self> {
         let mut cursor = Cursor::new(bytes);
         Self::load_from_reader(&mut cursor)
@@ -111,18 +113,20 @@ impl Accumulator {
     }
 
     pub fn evaluate(&self, weights: &NnueWeights) -> i32 {
-        // バイアスも16384倍(128 * 128)のスケールに合わせておく
-        let mut sum: i32 = weights.output_bias * (1 << WEIGHT_SCALE_BITS);
+        // SCReLU対応: アキュムレータを2乗するため、全体のスケールが 128^3 (2^21) になる。
+        // オーバーフローを防ぐため、計算は i64 で行う。
+        // weights.output_bias はすでに 128倍 されているため、2^14 (16384) 倍して 2^21 スケールに合わせる。
+        let mut sum: i64 = (weights.output_bias as i64) << (WEIGHT_SCALE_BITS * 2);
 
         for i in 0..HIDDEN_SIZE {
-            // Clipped ReLU として機能する (負の値を0にし、上限を127にクリップ)
-            let activation = self.values[i].clamp(0, ACTIVATION_MAX) as i32;
-            sum += activation * weights.output_weights[i];
+            // SCReLU: 0〜127にクリップしてから2乗する
+            let activation = self.values[i].clamp(0, ACTIVATION_MAX) as i64;
+            let squared_activation = activation * activation;
+
+            sum += squared_activation * (weights.output_weights[i] as i64);
         }
 
-        // 16384 (2^14) で割って、元のスコア(600スケール)に戻す
-        sum >>= WEIGHT_SCALE_BITS * 2;
-
-        sum
+        // 128^3 (2^21) で割って、元のスコア(600スケール)に戻す
+        (sum >> (WEIGHT_SCALE_BITS * 3)) as i32
     }
 }

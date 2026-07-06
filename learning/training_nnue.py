@@ -59,11 +59,11 @@ class AnimalShogiNNUE(nn.Module):
     def forward(self, features):
         acc = self.feature_layer(features)
         
-        # ★修正: Rust側の clamp(0, 127) と厳密に一致させるため、127.0 / QUANT_SCALE を上限とする
         acc = torch.clamp(acc, min=0.0, max=127.0 / QUANT_SCALE)
         
-        # ★修正: 2乗(SCReLU)をやめ、シンプルな Clipped ReLU に戻す
-        score = self.output_layer(acc)
+        acc_squared = acc * acc
+        score = self.output_layer(acc_squared)
+        
         return score
 
 # --- 3. Rustエンジン向けに重みをエクスポート ---
