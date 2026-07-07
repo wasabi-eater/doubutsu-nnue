@@ -1,6 +1,8 @@
 use crate::{
     board::{Board, PieceKind, Player},
-    move_gen::Move,
+    make_move::FeatureUpdate,
+    move_gen::{self, Move},
+    zobrist::ZobristTable,
 };
 
 pub fn sq_to_string(sq: u8) -> String {
@@ -92,4 +94,94 @@ pub fn board_string(board: &Board) -> String {
     ));
 
     s
+}
+
+pub struct GameManager<'zt> {
+    current_hash: u64,
+    z_table: &'zt ZobristTable,
+    board: Board,
+    history: Vec<(u64, Board)>,
+    winner: Option<Player>,
+    turn: Option<Player>, // 終局時はNone
+    turn_count: usize,
+    moves: Vec<Move>,
+}
+impl<'zt> GameManager<'zt> {
+    pub fn new(z_table: &'zt ZobristTable) -> Self {
+        let board = Board::initial_position();
+        let mut moves = Vec::new();
+        move_gen::generate_moves(&board, &mut moves);
+        Self {
+            current_hash: board.compute_initial_hash(z_table),
+            z_table,
+            board,
+            moves,
+            history: Vec::new(),
+            winner: None,
+            turn: Some(Player::Sente),
+            turn_count: 0,
+        }
+    }
+    pub fn board(&self) -> &Board {
+        &self.board
+    }
+    pub fn history(&self) -> &[(u64, Board)] {
+        &self.history
+    }
+    pub fn winner(&self) -> Option<Player> {
+        self.winner
+    }
+    pub fn turn(&self) -> Option<Player> {
+        self.turn
+    }
+    pub fn is_finished(&self) -> bool {
+        self.turn.is_none()
+    }
+    pub fn is_draw(&self) -> bool {
+        self.is_finished() && self.winner.is_none()
+    }
+    pub fn turn_count(&self) -> usize {
+        self.turn_count
+    }
+    pub fn z_table(&self) -> &ZobristTable {
+        self.z_table
+    }
+    pub fn current_hash(&self) -> u64 {
+        self.current_hash
+    }
+    pub fn moves(&self) -> &[Move] {
+        if self.is_finished() { &[] } else { &self.moves }
+    }
+    fn check_draw(&self) -> bool {
+        self.turn_count >= 200
+            || self
+                .history
+                .iter()
+                .filter(|&(hash, board)| *hash == self.current_hash && *board == self.board)
+                .count()
+                >= 2
+    }
+    pub fn make_move(&mut self, m: Move) -> Option<FeatureUpdate> {
+        let turn = self.turn?;
+        self.history.push((self.current_hash, self.board.clone()));
+        let (feature_update, next_hash) = self.board.make_move(m, self.z_table, self.current_hash);
+        self.current_hash = next_hash;
+        self.turn_count += 1;
+
+        self.moves = Vec::new();
+        move_gen::generate_moves(&self.board, &mut self.moves);
+
+        if self.check_draw() {
+            self.turn = None;
+        } else if let Some(winner) = self.board.winner() {
+            self.winner = Some(winner);
+            self.turn = None;
+        } else if self.moves.is_empty() {
+            self.winner = Some(turn);
+            self.turn = None;
+        } else {
+            self.turn = Some(turn.opponent());
+        }
+        Some(feature_update)
+    }
 }

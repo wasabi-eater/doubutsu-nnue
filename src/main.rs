@@ -10,15 +10,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use doubutsu_nnue::board::{Board, Player};
-use doubutsu_nnue::game::{board_string, move_to_string};
-use doubutsu_nnue::move_gen::{Move, generate_moves};
+use doubutsu_nnue::game::{GameManager, board_string, move_to_string};
+use doubutsu_nnue::move_gen::Move;
 use doubutsu_nnue::nnue::NnueWeights;
 use doubutsu_nnue::search::{SearchLimits, search_best_move};
 use doubutsu_nnue::zobrist::{TranspositionTable, ZobristTable};
 
 struct PositionRecord {
     features: Vec<usize>,
-    side_to_move: Player,
 }
 
 fn main() {
@@ -44,7 +43,6 @@ fn main() {
             mode = input.trim().parse().unwrap_or(1);
         }
     }
-
     let z_table = ZobristTable::new();
 
     let nnue_weights = NnueWeights::load_from_file("nnue_weights.bin").unwrap_or_else(|e| {
@@ -76,7 +74,7 @@ fn main() {
 
 // --- 🎮 AI同士の真剣勝負モード ---
 fn play_ai_vs_ai(z_table: &ZobristTable, tt: &mut TranspositionTable, weights: &NnueWeights) {
-    let mut board = Board::initial_position();
+    let mut game_mng = GameManager::new(z_table);
     let limits = SearchLimits {
         max_time: Duration::from_millis(2000), // 1手2秒の全力探索
         max_depth: 64,                         // 深さ制限は事実上なし
@@ -84,72 +82,48 @@ fn play_ai_vs_ai(z_table: &ZobristTable, tt: &mut TranspositionTable, weights: &
 
     println!("\n🔥 AI同士の真剣勝負を開始します！ 🔥");
 
-    let mut turn_count = 1;
-    let mut game_history: Vec<(u64, Board)> = Vec::new();
-
-    loop {
+    while let Some(turn) = game_mng.turn() {
         println!("\n====================================");
         println!(
             "手数: {}手目 ({})",
-            turn_count,
-            if board.side_to_move == Player::Sente {
+            game_mng.turn_count() + 1,
+            if turn == Player::Sente {
                 "先手"
             } else {
                 "後手"
             }
         );
-        print_board(&board);
-
-        let current_hash = board.compute_initial_hash(z_table);
-
-        let count = game_history
-            .iter()
-            .filter(|&&(h, ref b)| h == current_hash && *b == board)
-            .count();
-        if count >= 2 {
-            println!("\n====================================");
-            println!("千日手が成立しました。引き分けです！");
-            break;
-        }
-
-        let mut moves = Vec::new();
-        generate_moves(&board, &mut moves);
-        if moves.is_empty() {
-            println!(
-                "合法手がありません。{} の負けです。",
-                if board.side_to_move == Player::Sente {
-                    "先手"
-                } else {
-                    "後手"
-                }
-            );
-            break;
-        }
+        print_board(game_mng.board());
 
         println!("\n🤖 AIが思考中...");
-        let best_move = search_best_move(&board, z_table, tt, weights, &limits, &game_history).0;
+        let best_move = search_best_move(
+            game_mng.board(),
+            game_mng.z_table(),
+            tt,
+            weights,
+            &limits,
+            game_mng.history(),
+        )
+        .0;
 
         println!("💡 AIの指し手: {}", move_to_string(best_move));
 
-        game_history.push((current_hash, board.clone()));
-        board.make_move(best_move, z_table, current_hash);
+        game_mng.make_move(best_move);
+    }
 
-        if let Some(w) = board.winner() {
-            println!("\n====================================");
-            println!("最終盤面:");
-            print_board(&board);
-            match w {
-                Player::Sente => println!("🎉 先手の勝利です！"),
-                Player::Gote => println!("🎉 後手の勝利です！"),
-            }
-            break;
+    if let Some(w) = game_mng.winner() {
+        println!("\n====================================");
+        println!("最終盤面:");
+        print_board(game_mng.board());
+        match w {
+            Player::Sente => println!("🎉 先手の勝利です！"),
+            Player::Gote => println!("🎉 後手の勝利です！"),
         }
-
-        turn_count += 1;
-        if turn_count > 200 {
-            println!("200手を超えました。引き分けです。");
-            break;
-        }
+    } else if game_mng.turn_count() >= 200 {
+        println!("200手を超えました。引き分けです。");
+    } else if game_mng.is_draw() {
+        println!("\n====================================");
+        println!("千日手が成立しました。引き分けです！");
     }
 }
 
@@ -160,9 +134,7 @@ fn run_engine_mode(z_table: &ZobristTable, weights: &NnueWeights) {
         max_time: Duration::from_millis(500),
         max_depth: 64,
     };
-
-    let mut board = Board::initial_position();
-    let mut game_history: Vec<(u64, Board)> = Vec::new();
+    let mut game_mng = GameManager::new(z_table);
 
     loop {
         let mut input = String::new();
@@ -177,36 +149,30 @@ fn run_engine_mode(z_table: &ZobristTable, weights: &NnueWeights) {
             println!("readyok");
             io::stdout().flush().unwrap();
         } else if input.starts_with("position moves") {
-            board = Board::initial_position();
-            game_history.clear();
+            game_mng = GameManager::new(z_table);
             let parts: Vec<&str> = input.split_whitespace().collect();
             for m_str in parts.iter().skip(2) {
                 if let Ok(m_val) = m_str.parse::<u16>() {
                     let m = Move(m_val);
-                    let hash = board.compute_initial_hash(z_table);
-                    game_history.push((hash, board.clone()));
-                    board.make_move(m, z_table, hash);
+                    game_mng.make_move(m);
                 }
             }
         } else if input == "go" {
-            let current_hash = board.compute_initial_hash(z_table);
-            let is_draw = game_history
-                .iter()
-                .filter(|&&(h, ref b)| h == current_hash && *b == board)
-                .count()
-                >= 2;
-
-            let mut moves = Vec::new();
-            generate_moves(&board, &mut moves);
-
             // 終局判定
-            if is_draw || game_history.len() > 200 {
+            if game_mng.is_draw() {
                 println!("bestmove 0 draw");
-            } else if board.winner().is_some() || moves.is_empty() {
+            } else if game_mng.is_finished() {
+                // 引き分け以外で終局している場合、"go"が送られている時点で終局している
                 println!("bestmove 0 loss");
             } else {
-                let (best_move, _) =
-                    search_best_move(&board, z_table, &tt, weights, &limits, &game_history);
+                let (best_move, _) = search_best_move(
+                    game_mng.board(),
+                    game_mng.z_table(),
+                    &tt,
+                    weights,
+                    &limits,
+                    game_mng.history(),
+                );
                 println!("bestmove {}", best_move.0);
             }
             io::stdout().flush().unwrap();
@@ -221,51 +187,24 @@ fn play_vs_human(
     weights: &NnueWeights,
     human_player: Player,
 ) {
-    let mut board = Board::initial_position();
+    let mut game_mng = GameManager::new(z_table);
     let limits = SearchLimits {
-        max_time: Duration::from_millis(1000),
+        max_time: Duration::from_millis(2000),
         max_depth: 31,
     };
 
     println!("\n対局を開始します！");
 
-    let mut turn_count = 1;
-    let mut game_history: Vec<(u64, Board)> = Vec::new();
-
     loop {
         println!("\n====================================");
-        println!("手数: {}手目", turn_count);
-        print_board(&board);
+        println!("手数: {}手目", game_mng.turn_count() + 1);
+        print_board(game_mng.board());
 
-        let current_hash = board.compute_initial_hash(z_table);
+        let Some(turn) = game_mng.turn() else { break };
 
-        let count = game_history
-            .iter()
-            .filter(|&&(h, ref b)| h == current_hash && *b == board)
-            .count();
-        if count >= 2 {
-            println!("\n====================================");
-            println!("千日手が成立しました。引き分けです！");
-            break;
-        }
-
-        let mut moves = Vec::new();
-        generate_moves(&board, &mut moves);
-        if moves.is_empty() {
-            println!(
-                "合法手がありません。{} の負けです。",
-                if board.side_to_move == Player::Sente {
-                    "先手"
-                } else {
-                    "後手"
-                }
-            );
-            break;
-        }
-
-        let best_move = if board.side_to_move == human_player {
+        let best_move = if turn == human_player {
             println!("\nあなたの番です。指し手を番号で選んでください:");
-            for (i, &m) in moves.iter().enumerate() {
+            for (i, &m) in game_mng.moves().iter().enumerate() {
                 println!("{:2}: {}", i, move_to_string(m));
             }
             loop {
@@ -274,42 +213,46 @@ fn play_vs_human(
                 let mut input = String::new();
                 io::stdin().read_line(&mut input).unwrap();
                 if let Ok(choice) = input.trim().parse::<usize>()
-                    && choice < moves.len()
+                    && choice < game_mng.moves().len()
                 {
-                    break moves[choice];
+                    break game_mng.moves()[choice];
                 }
                 println!("正しい番号を入力してください。");
             }
         } else {
             println!("\nAIが思考中...");
-            search_best_move(&board, z_table, tt, weights, &limits, &game_history).0
+            search_best_move(
+                game_mng.board(),
+                z_table,
+                tt,
+                weights,
+                &limits,
+                game_mng.history(),
+            )
+            .0
         };
 
-        if board.side_to_move != human_player {
+        if turn != human_player {
             println!("🤖 AIの指し手: {}", move_to_string(best_move));
         } else {
             println!("👤 あなたの指し手: {}", move_to_string(best_move));
         }
 
-        game_history.push((current_hash, board.clone()));
-        board.make_move(best_move, z_table, current_hash);
-
-        if let Some(w) = board.winner() {
-            println!("\n====================================");
-            println!("最終盤面:");
-            print_board(&board);
-            match w {
-                Player::Sente => println!("🎉 先手の勝利です！"),
-                Player::Gote => println!("🎉 後手の勝利です！"),
-            }
-            break;
+        game_mng.make_move(best_move);
+    }
+    if let Some(w) = game_mng.winner() {
+        println!("\n====================================");
+        println!("最終盤面:");
+        print_board(game_mng.board());
+        match w {
+            Player::Sente => println!("🎉 先手の勝利です！"),
+            Player::Gote => println!("🎉 後手の勝利です！"),
         }
-
-        turn_count += 1;
-        if turn_count > 200 {
-            println!("200手を超えました。引き分けです。");
-            break;
-        }
+    } else if game_mng.turn_count() >= 200 {
+        println!("200手を超えました。引き分けです。");
+    } else if game_mng.is_draw() {
+        println!("\n====================================");
+        println!("千日手が成立しました。引き分けです！");
     }
 }
 
@@ -328,84 +271,61 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
     let completed_games = Arc::new(AtomicUsize::new(0));
 
     (1..=num_games).into_par_iter().for_each(|game_id| {
-        let mut board = Board::initial_position();
-        let mut turn_count = 1;
-        let winner;
+        let mut game_mng = GameManager::new(z_table);
         let mut game_records: Vec<PositionRecord> = Vec::new();
-        let mut game_history: Vec<(u64, Board)> = Vec::new();
 
         let tt = TranspositionTable::new(1024 * 512);
 
         let mut rng = SmallRng::seed_from_u64(game_id as u64);
 
-        let random_plies = rng.random_range(0..3usize) + 1;
+        let random_plies = rng.random_range(0..3usize);
 
         let limits = SearchLimits {
             max_time: Duration::from_millis(50),
             max_depth: 11,
         };
 
-        loop {
+        while !game_mng.is_finished() {
             game_records.push(PositionRecord {
-                features: board.extract_all_features(),
-                side_to_move: board.side_to_move,
+                features: game_mng.board().extract_all_features(),
             });
 
-            let current_hash = board.compute_initial_hash(z_table);
-
-            let count = game_history
-                .iter()
-                .filter(|&&(h, ref b)| h == current_hash && *b == board)
-                .count();
-            if count >= 2 {
-                winner = None;
-                break;
-            }
-
-            let mut moves = Vec::new();
-            generate_moves(&board, &mut moves);
-            if moves.is_empty() {
-                winner = Some(board.side_to_move.opponent());
-                break;
-            }
-
-            let best_move = if turn_count <= random_plies {
-                let random_idx = rng.random_range(0..moves.len());
-                moves[random_idx]
+            let best_move = if game_mng.turn_count() <= random_plies {
+                let random_idx = rng.random_range(0..game_mng.moves().len());
+                game_mng.moves()[random_idx]
             } else {
-                search_best_move(&board, z_table, &tt, weights, &limits, &game_history).0
+                search_best_move(
+                    game_mng.board(),
+                    z_table,
+                    &tt,
+                    weights,
+                    &limits,
+                    game_mng.history(),
+                )
+                .0
             };
 
-            game_history.push((current_hash, board.clone()));
-            board.make_move(best_move, z_table, current_hash);
-
-            if let Some(w) = board.winner() {
-                winner = Some(w);
-                break;
-            }
-
-            turn_count += 1;
-            if turn_count > 200 {
-                winner = None;
-                break;
-            }
+            game_mng.make_move(best_move);
         }
 
-        let result_str = match winner {
+        let result_str = match game_mng.winner() {
             Some(Player::Sente) => "先手勝利",
             Some(Player::Gote) => "後手勝利",
             None => "引き分け",
         };
 
         let current_completed = completed_games.fetch_add(1, Ordering::SeqCst) + 1;
-        if current_completed % 10 == 0 || current_completed == 1 {
+        if current_completed.is_multiple_of(10) || current_completed == 1 {
             println!(
                 "ゲーム終了: {} ({}手) [{}/{}]",
-                result_str, turn_count, current_completed, num_games
+                result_str,
+                game_mng.turn_count(),
+                current_completed,
+                num_games
             );
         }
 
-        let sente_score: f32 = match winner {
+        let sente_score: f32 = match game_mng.winner() {
             Some(Player::Sente) => 1.0,
             Some(Player::Gote) => -1.0,
             None => 0.0,
