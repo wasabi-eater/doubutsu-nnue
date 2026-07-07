@@ -156,13 +156,7 @@ impl Board {
         let mut features = Vec::new();
         // 盤上の駒
         for player in [Player::Sente, Player::Gote] {
-            for kind in [
-                PieceKind::Lion,
-                PieceKind::Giraffe,
-                PieceKind::Elephant,
-                PieceKind::Chick,
-                PieceKind::Hen,
-            ] {
+            for kind in PieceKind::ALL {
                 let p_idx = get_piece_index(player, kind);
                 let mut bb = self.piece_bbs[p_idx];
                 while bb != 0 {
@@ -204,7 +198,6 @@ impl Board {
             }
         }
 
-        // ★追加: 現在の手番フラグを初期特徴量に追加する
         if self.side_to_move == Player::Sente {
             features.push(132);
         } else {
