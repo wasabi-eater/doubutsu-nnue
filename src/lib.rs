@@ -9,7 +9,7 @@ pub mod nnue;
 pub mod search;
 pub mod zobrist;
 
-use board::{Board, PieceKind, Player};
+use board::{Board, Player};
 use game::move_to_string;
 use move_gen::generate_moves;
 use nnue::NnueWeights;
@@ -89,20 +89,16 @@ impl AnimalShogiWasm {
 
         self.history.push((current_hash, self.board.clone()));
         self.board.make_move(best_move, &self.z_table, current_hash);
-
-        let from_sq = (best_move.0 & 0x0F) as u8;
-        let to_sq = ((best_move.0 >> 4) & 0x0F) as u8;
-        let kind_val = ((best_move.0 >> 8) & 0x07) as u8;
-        let is_drop = if (best_move.0 & (1 << 12)) != 0 {
-            "true"
-        } else {
-            "false"
-        };
         let move_str = move_to_string(best_move);
 
         format!(
             r#"{{"move_text": "{}", "depth": {}, "from": {}, "to": {}, "is_drop": {}, "kind": {}}}"#,
-            move_str, depth, from_sq, to_sq, is_drop, kind_val
+            move_str,
+            depth,
+            best_move.sq_from(),
+            best_move.sq_to(),
+            best_move.is_drop(),
+            best_move.piece_kind() as u8
         )
     }
 
@@ -112,11 +108,7 @@ impl AnimalShogiWasm {
         generate_moves(&self.board, &mut moves);
 
         for m in moves {
-            let m_from = (m.0 & 0x0F) as u8;
-            let m_to = ((m.0 >> 4) & 0x0F) as u8;
-            let is_drop = (m.0 & (1 << 12)) != 0;
-
-            if !is_drop && m_from == from_sq && m_to == to_sq {
+            if !m.is_drop() && m.sq_from() == from_sq && m.sq_to() == to_sq {
                 let current_hash = self.board.compute_initial_hash(&self.z_table);
                 self.history.push((current_hash, self.board.clone()));
                 self.board.make_move(m, &self.z_table, current_hash);
@@ -131,11 +123,7 @@ impl AnimalShogiWasm {
         generate_moves(&self.board, &mut moves);
 
         for m in moves {
-            let m_to = ((m.0 >> 4) & 0x0F) as u8;
-            let m_kind = ((m.0 >> 8) & 0x07) as u8;
-            let is_drop = (m.0 & (1 << 12)) != 0;
-
-            if is_drop && m_kind == kind_val && m_to == to_sq {
+            if m.is_drop() && m.piece_kind() as u8 == kind_val && m.sq_to() == to_sq {
                 let current_hash = self.board.compute_initial_hash(&self.z_table);
                 self.history.push((current_hash, self.board.clone()));
                 self.board.make_move(m, &self.z_table, current_hash);

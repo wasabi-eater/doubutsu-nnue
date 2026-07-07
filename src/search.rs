@@ -170,19 +170,12 @@ impl Search<'_, '_, '_, '_> {
 
     fn is_repetition(&self, current_hash: u64, current_board: &Board) -> bool {
         let len = self.history.len();
-        if len >= 2 {
-            let mut i = len.saturating_sub(2);
-            loop {
-                if self.history[i].0 == current_hash && self.history[i].1 == *current_board {
-                    return true;
-                }
-                if i < 2 {
-                    break;
-                }
-                i -= 2;
-            }
-        }
-        false
+        len >= 2
+            && self.history[..=len - 2]
+                .iter()
+                .rev()
+                .step_by(2)
+                .any(|(hash, board)| *hash == current_hash && *board == *current_board)
     }
 
     fn can_capture_lion(&self, board: &Board, moves: &[Move]) -> bool {
@@ -190,12 +183,9 @@ impl Search<'_, '_, '_, '_> {
         let opponent_lion_idx = get_piece_index(opponent, PieceKind::Lion);
         let opponent_lion_bb = board.piece_bbs[opponent_lion_idx];
 
-        for m in moves {
-            if !m.is_drop() && (opponent_lion_bb & (1 << m.sq_to())) != 0 {
-                return true;
-            }
-        }
-        false
+        moves
+            .iter()
+            .any(|m| !m.is_drop() && (opponent_lion_bb & (1 << m.sq_to())) != 0)
     }
 
     fn search_q(
