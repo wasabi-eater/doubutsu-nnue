@@ -10,6 +10,11 @@ pub struct ZobristTable {
     pub side_to_move: u64,
 }
 
+impl Default for ZobristTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl ZobristTable {
     pub fn new() -> Self {
         let mut rng: SmallRng = rand::make_rng();
