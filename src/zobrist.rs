@@ -1,24 +1,9 @@
+use rand::TryRng;
+use rand::rngs::SmallRng;
+
 use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::Move;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-struct XorShift64 {
-    state: u64,
-}
-
-impl XorShift64 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: if seed == 0 { 1 } else { seed },
-        }
-    }
-    fn next(&mut self) -> u64 {
-        self.state ^= self.state << 13;
-        self.state ^= self.state >> 7;
-        self.state ^= self.state << 17;
-        self.state
-    }
-}
 
 pub struct ZobristTable {
     pub features: [u64; 134],
@@ -27,13 +12,13 @@ pub struct ZobristTable {
 
 impl ZobristTable {
     pub fn new() -> Self {
-        let mut rng = XorShift64::new(0x123456789ABCDEF0);
+        let mut rng: SmallRng = rand::make_rng();
         let mut table = Self {
             features: [0; 134],
-            side_to_move: rng.next(),
+            side_to_move: rng.try_next_u64().unwrap(),
         };
         for i in 0..134 {
-            table.features[i] = rng.next();
+            table.features[i] = rng.try_next_u64().unwrap();
         }
         table
     }

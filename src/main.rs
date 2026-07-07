@@ -1,8 +1,10 @@
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use rand::{RngExt, SeedableRng};
+use rand::rngs::SmallRng;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,33 +25,6 @@ use zobrist::{TranspositionTable, ZobristTable};
 struct PositionRecord {
     features: Vec<usize>,
     side_to_move: Player,
-}
-
-struct XorShift64 {
-    state: u64,
-}
-
-impl XorShift64 {
-    fn new(id: u64) -> Self {
-        let time_seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        let seed = time_seed ^ (id.wrapping_mul(0x9E3779B97F4A7C15));
-
-        Self { state: seed.max(1) }
-    }
-
-    fn next(&mut self) -> u64 {
-        self.state ^= self.state << 13;
-        self.state ^= self.state >> 7;
-        self.state ^= self.state << 17;
-        self.state
-    }
-    fn next_usize(&mut self, max: usize) -> usize {
-        (self.next() % (max as u64)) as usize
-    }
 }
 
 fn main() {
@@ -367,9 +342,9 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
 
         let tt = TranspositionTable::new(1024 * 512);
 
-        let mut rng = XorShift64::new(game_id as u64);
+        let mut rng = SmallRng::seed_from_u64(game_id as u64);
 
-        let random_plies = rng.next_usize(3) + 1;
+        let random_plies = rng.random_range(0..3usize) + 1;
 
         let limits = SearchLimits {
             max_time: Duration::from_millis(50),
@@ -401,7 +376,7 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
             }
 
             let best_move = if turn_count <= random_plies {
-                let random_idx = rng.next_usize(moves.len());
+                let random_idx = rng.random_range(0..moves.len());
                 moves[random_idx]
             } else {
                 search_best_move(&board, z_table, &tt, weights, &limits, &game_history).0
