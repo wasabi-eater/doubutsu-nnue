@@ -3,24 +3,18 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::time::Duration;
 
-use rand::{RngExt, SeedableRng};
 use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-mod board;
-mod make_move;
-mod move_gen;
-mod nnue;
-mod search;
-mod zobrist;
-
-use board::{Board, PieceKind, Player};
-use move_gen::{Move, generate_moves};
-use nnue::NnueWeights;
-use search::{SearchLimits, search_best_move};
-use zobrist::{TranspositionTable, ZobristTable};
+use doubutsu_nnue::board::{Board, Player};
+use doubutsu_nnue::game::{board_string, move_to_string};
+use doubutsu_nnue::move_gen::{Move, generate_moves};
+use doubutsu_nnue::nnue::NnueWeights;
+use doubutsu_nnue::search::{SearchLimits, search_best_move};
+use doubutsu_nnue::zobrist::{TranspositionTable, ZobristTable};
 
 struct PositionRecord {
     features: Vec<usize>,
@@ -492,83 +486,6 @@ fn rotate_180(f: usize) -> usize {
     }
 }
 
-fn sq_to_string(sq: u8) -> String {
-    let col = (b'A' + (sq % 3)) as char;
-    let row = (b'1' + (sq / 3)) as char;
-    format!("{}{}", col, row)
-}
-
-fn move_to_string(m: Move) -> String {
-    let piece_str = match m.piece_kind() {
-        PieceKind::Lion => "ライオン",
-        PieceKind::Giraffe => "きりん",
-        PieceKind::Elephant => "ぞう",
-        PieceKind::Chick => "ひよこ",
-        PieceKind::Hen => "にわとり",
-    };
-
-    if m.is_drop() {
-        format!("{} に {} を打つ", sq_to_string(m.sq_to()), piece_str)
-    } else {
-        let prom = if m.is_promote() { "成" } else { "" };
-        format!(
-            "{} から {} へ移動 ({}{})",
-            sq_to_string(m.sq_from()),
-            sq_to_string(m.sq_to()),
-            piece_str,
-            prom
-        )
-    }
-}
-
-fn print_board(board: &crate::board::Board) {
-    let piece_str = |p: crate::board::Player, k: crate::board::PieceKind| -> &'static str {
-        match (p, k) {
-            (Player::Sente, PieceKind::Lion) => " L ",
-            (Player::Gote, PieceKind::Lion) => " l ",
-            (Player::Sente, PieceKind::Giraffe) => " G ",
-            (Player::Gote, PieceKind::Giraffe) => " g ",
-            (Player::Sente, PieceKind::Elephant) => " E ",
-            (Player::Gote, PieceKind::Elephant) => " e ",
-            (Player::Sente, PieceKind::Chick) => " C ",
-            (Player::Gote, PieceKind::Chick) => " c ",
-            (Player::Sente, PieceKind::Hen) => " H ",
-            (Player::Gote, PieceKind::Hen) => " h ",
-        }
-    };
-
-    println!(
-        "後手持駒: ひよこ{}, きりん{}, ぞう{}",
-        board.hands[1].chicks, board.hands[1].giraffes, board.hands[1].elephants
-    );
-    println!("  A  B  C");
-    for y in 0..4 {
-        print!("{} ", y + 1);
-        for x in 0..3 {
-            let sq = y * 3 + x;
-            let bit = 1 << sq;
-            let mut found = false;
-            for p in [Player::Sente, Player::Gote] {
-                for k in PieceKind::ALL {
-                    let idx = crate::board::get_piece_index(p, k);
-                    if (board.piece_bbs[idx] & bit) != 0 {
-                        print!("{}", piece_str(p, k));
-                        found = true;
-                        break;
-                    }
-                }
-                if found {
-                    break;
-                }
-            }
-            if !found {
-                print!(" . ");
-            }
-        }
-        println!();
-    }
-    println!(
-        "先手持駒: ひよこ{}, きりん{}, ぞう{}",
-        board.hands[0].chicks, board.hands[0].giraffes, board.hands[0].elephants
-    );
+fn print_board(board: &Board) {
+    println!("{}", board_string(board));
 }

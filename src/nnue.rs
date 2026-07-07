@@ -27,13 +27,11 @@ impl NnueWeights {
         }
     }
 
-    #[allow(unused)]
     pub fn load_from_file(path: &str) -> Result<Self> {
         let mut file = File::open(path)?;
         Self::load_from_reader(&mut file)
     }
 
-    #[allow(unused)]
     pub fn load_from_slice(bytes: &[u8]) -> std::io::Result<Self> {
         let mut cursor = Cursor::new(bytes);
         Self::load_from_reader(&mut cursor)

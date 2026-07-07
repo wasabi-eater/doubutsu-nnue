@@ -37,12 +37,17 @@ pub fn get_hand_feature(player: Player, kind: PieceKind, count: u8) -> usize {
 }
 
 // --- 差分更新の記録用構造体 ---
-// ★修正: 手番の更新処理が増えるため、配列の容量を4から8に増やす
 pub struct FeatureUpdate {
     pub added: [usize; 8],
     pub added_count: usize,
     pub removed: [usize; 8],
     pub removed_count: usize,
+}
+
+impl Default for FeatureUpdate {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FeatureUpdate {
@@ -179,17 +184,11 @@ impl Board {
         // 3. 手番を交代する
         self.side_to_move = opponent;
 
-        // ★追加: 手番フラグの特徴量も差分更新する
         let old_turn_feature = if me == Player::Sente { 132 } else { 133 };
         let new_turn_feature = if opponent == Player::Sente { 132 } else { 133 };
         update.remove(old_turn_feature);
         update.add(new_turn_feature);
 
-        // -------------------------------------------------------------
-        // ★ Zobrist ハッシュの魔法の更新 ★
-        // FeatureUpdateで作った「消えたID」「現れたID」のリストを
-        // そのままハッシュキーの配列インデックスとして使い、XORするだけ！
-        // -------------------------------------------------------------
         let mut next_hash = current_hash;
 
         // 消えた駒のハッシュを抜く (XOR)

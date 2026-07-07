@@ -88,7 +88,7 @@ pub fn search_best_move(
             let mut killer_moves = [[None; 2]; MAX_PLY];
 
             let mut thread_history = game_history.to_vec();
-            let mut thread_nodes = 0; 
+            let mut thread_nodes = 0;
 
             for depth in 1..=limits.max_depth {
                 let mut search = Search {
@@ -96,9 +96,9 @@ pub fn search_best_move(
                     tt,
                     nnue_weights,
                     max_time: limits.max_time,
-                    nodes: &mut thread_nodes, 
+                    nodes: &mut thread_nodes,
                     start_time,
-                    history: &mut thread_history, 
+                    history: &mut thread_history,
                     killer_moves: &mut killer_moves,
                     aborted: false,
                     shared_abort: shared_abort.clone(),
@@ -122,7 +122,9 @@ pub fn search_best_move(
 
                     let elapsed_ms = start_time.elapsed().as_millis() as u64;
                     let total_nodes = *search.nodes * num_threads;
-                    let nps = (total_nodes as u64 * 1000).checked_div(elapsed_ms).unwrap_or(0);
+                    let nps = (total_nodes as u64 * 1000)
+                        .checked_div(elapsed_ms)
+                        .unwrap_or(0);
 
                     #[cfg(target_arch = "wasm32")]
                     console::log_1(
@@ -209,7 +211,7 @@ impl Search<'_, '_, '_, '_> {
         if self.aborted {
             return 0;
         }
-        *self.nodes += 1; 
+        *self.nodes += 1;
 
         if let Some(winner) = board.winner() {
             return if winner == board.side_to_move {
