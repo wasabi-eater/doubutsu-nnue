@@ -281,8 +281,8 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
         let random_plies = rng.random_range(0..3usize);
 
         let limits = SearchLimits {
-            max_time: Duration::from_millis(50),
-            max_depth: 11,
+            max_time: Duration::from_millis(200),
+            max_depth: 20,
         };
 
         while !game_mng.is_finished() {
