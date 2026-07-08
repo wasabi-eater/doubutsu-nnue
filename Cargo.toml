@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 rand = "0.10.2"
+rand_xoshiro = "0.8.1"
 rayon = "1.12.0"
 wasm-bindgen = "0.2.126"
 web-sys = { version = "0.3.103", features = ["console"] }
