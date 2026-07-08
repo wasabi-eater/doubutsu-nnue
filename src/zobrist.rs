@@ -1,5 +1,4 @@
-use rand::TryRng;
-use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 
 use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::Move;
@@ -17,13 +16,13 @@ impl Default for ZobristTable {
 }
 impl ZobristTable {
     pub fn new() -> Self {
-        let mut rng: SmallRng = rand::make_rng();
+        let mut rng = rand_xoshiro::Xoroshiro128PlusPlus::seed_from_u64(0x1234567890abcdef);
         let mut table = Self {
             features: [0; 134],
-            side_to_move: rng.try_next_u64().unwrap(),
+            side_to_move: rng.next_u64(),
         };
         for i in 0..134 {
-            table.features[i] = rng.try_next_u64().unwrap();
+            table.features[i] = rng.next_u64();
         }
         table
     }
