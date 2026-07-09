@@ -9,23 +9,21 @@ pub mod nnue;
 pub mod search;
 pub mod zobrist;
 
-use board::{Board, Player};
+use board::Player;
 use game::move_to_string;
 use move_gen::generate_moves;
 use nnue::NnueWeights;
 use search::{SearchLimits, search_best_move};
 use zobrist::{TranspositionTable, ZobristTable};
 
-use crate::game::board_string;
+use crate::game::{GameManager, board_string};
 
 // --- JS側に公開するゲーム管理クラス ---
 #[wasm_bindgen]
 pub struct AnimalShogiWasm {
-    board: Board,
-    z_table: ZobristTable,
+    game_mng: GameManager<'static>,
     tt: TranspositionTable,
     weights: NnueWeights,
-    history: Vec<(u64, Board)>,
 }
 
 impl Default for AnimalShogiWasm {
@@ -38,7 +36,8 @@ impl Default for AnimalShogiWasm {
 impl AnimalShogiWasm {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        let z_table = ZobristTable::new();
+        let z_table = Box::leak(Box::new(ZobristTable::new())) as &_;
+        let game_mng = GameManager::new(z_table);
         let tt = TranspositionTable::new(1024 * 512);
 
         let weight_bytes = include_bytes!("../nnue_weights_public.bin");
@@ -49,25 +48,20 @@ impl AnimalShogiWasm {
         });
 
         Self {
-            board: Board::initial_position(),
-            z_table,
+            game_mng,
             tt,
             weights,
-            history: Vec::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.board = Board::initial_position();
-        self.history.clear();
+        self.game_mng = GameManager::new(self.game_mng.z_table());
         self.tt = TranspositionTable::new(1024 * 512);
     }
 
     // --- 🤖 AIの行動 ---
     pub fn search_and_apply_move(&mut self, time_limit_ms: u64) -> String {
-        let mut moves = Vec::new();
-        generate_moves(&self.board, &mut moves);
-        if moves.is_empty() {
+        if self.game_mng.moves().is_empty() {
             return r#"{"move_text": "投了", "depth": 0}"#.to_string();
         }
 
@@ -76,19 +70,16 @@ impl AnimalShogiWasm {
             max_depth: 32,
         };
 
-        let current_hash = self.board.compute_initial_hash(&self.z_table);
-
         let (best_move, depth) = search_best_move(
-            &self.board,
-            &self.z_table,
+            self.game_mng.board(),
+            self.game_mng.z_table(),
             &self.tt,
             &self.weights,
             &limits,
-            &self.history,
+            self.game_mng.history(),
         );
 
-        self.history.push((current_hash, self.board.clone()));
-        self.board.make_move(best_move, &self.z_table, current_hash);
+        self.game_mng.make_move(best_move);
         let move_str = move_to_string(best_move);
 
         format!(
@@ -105,13 +96,11 @@ impl AnimalShogiWasm {
     // --- 👤 人間の行動 (メインスレッドの同期用にも使います) ---
     pub fn apply_human_move(&mut self, from_sq: u8, to_sq: u8) -> bool {
         let mut moves = Vec::new();
-        generate_moves(&self.board, &mut moves);
+        generate_moves(self.game_mng.board(), &mut moves);
 
         for m in moves {
             if !m.is_drop() && m.sq_from() == from_sq && m.sq_to() == to_sq {
-                let current_hash = self.board.compute_initial_hash(&self.z_table);
-                self.history.push((current_hash, self.board.clone()));
-                self.board.make_move(m, &self.z_table, current_hash);
+                self.game_mng.make_move(m);
                 return true;
             }
         }
@@ -119,14 +108,9 @@ impl AnimalShogiWasm {
     }
 
     pub fn apply_human_drop(&mut self, kind_val: u8, to_sq: u8) -> bool {
-        let mut moves = Vec::new();
-        generate_moves(&self.board, &mut moves);
-
-        for m in moves {
+        for m in self.game_mng.moves() {
             if m.is_drop() && m.piece_kind() as u8 == kind_val && m.sq_to() == to_sq {
-                let current_hash = self.board.compute_initial_hash(&self.z_table);
-                self.history.push((current_hash, self.board.clone()));
-                self.board.make_move(m, &self.z_table, current_hash);
+                self.game_mng.make_move(*m);
                 return true;
             }
         }
@@ -135,34 +119,17 @@ impl AnimalShogiWasm {
 
     // --- 🎮 状態の取得 ---
     pub fn get_winner(&self) -> i32 {
-        if let Some(winner) = self.board.winner() {
+        if let Some(winner) = self.game_mng.winner() {
             if winner == Player::Sente { 1 } else { 2 }
+        } else if self.game_mng.is_draw() {
+            0 // 引き分け
         } else {
-            let current_hash = self.board.compute_initial_hash(&self.z_table);
-            let count = self
-                .history
-                .iter()
-                .filter(|&&(h, ref b)| h == current_hash && *b == self.board)
-                .count();
-            if count >= 2 {
-                return 0; // 引き分け
-            }
-
-            let mut moves = Vec::new();
-            generate_moves(&self.board, &mut moves);
-            if moves.is_empty() {
-                if self.board.side_to_move == Player::Sente {
-                    return 2;
-                } else {
-                    return 1;
-                }
-            }
             -1 // 進行中
         }
     }
 
     pub fn get_turn(&self) -> i32 {
-        if self.board.side_to_move == Player::Sente {
+        if self.game_mng.board().side_to_move == Player::Sente {
             1
         } else {
             2
@@ -170,6 +137,6 @@ impl AnimalShogiWasm {
     }
 
     pub fn get_board_string(&self) -> String {
-        board_string(&self.board)
+        board_string(self.game_mng.board())
     }
 }

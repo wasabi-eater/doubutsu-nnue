@@ -143,7 +143,7 @@ impl<'zt> GameManager<'zt> {
     pub fn turn_count(&self) -> usize {
         self.turn_count
     }
-    pub fn z_table(&self) -> &ZobristTable {
+    pub fn z_table(&self) -> &'zt ZobristTable {
         self.z_table
     }
     pub fn current_hash(&self) -> u64 {
