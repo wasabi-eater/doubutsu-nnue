@@ -3,8 +3,17 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
 use web_time::{Duration, Instant};
 
-#[cfg(target_arch = "wasm32")]
-use web_sys::console;
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!($($arg)*).into()
+        );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        println!($($arg)*);
+    }};
+}
 
 use crate::board::{Board, PieceKind, Player, get_piece_index};
 use crate::move_gen::{Move, generate_moves};
@@ -126,19 +135,13 @@ pub fn search_best_move(
                         .checked_div(elapsed_ms)
                         .unwrap_or(0);
 
-                    #[cfg(target_arch = "wasm32")]
-                    console::log_1(
-                        &format!(
-                            "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | Total NPS: {}",
-                            depth, score, total_nodes, elapsed_ms, nps
-                        )
-                        .into(),
-                    );
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    println!(
+                    log!(
                         "Depth: {} | Score: {} | Nodes: {} | Time: {}ms | Total NPS: {}",
-                        depth, score, total_nodes, elapsed_ms, nps
+                        depth,
+                        score,
+                        total_nodes,
+                        elapsed_ms,
+                        nps
                     );
                 }
 
