@@ -82,11 +82,11 @@ fn play_ai_vs_ai(z_table: &ZobristTable, tt: &mut TranspositionTable, weights: &
 
     println!("\n🔥 AI同士の真剣勝負を開始します！ 🔥");
 
-    while let Some(turn) = game_mng.turn() {
+    while let Some(turn) = game_mng.side_to_move() {
         println!("\n====================================");
         println!(
             "手数: {}手目 ({})",
-            game_mng.turn_count() + 1,
+            game_mng.move_count() + 1,
             if turn == Player::Sente {
                 "先手"
             } else {
@@ -119,7 +119,7 @@ fn play_ai_vs_ai(z_table: &ZobristTable, tt: &mut TranspositionTable, weights: &
             Player::Sente => println!("🎉 先手の勝利です！"),
             Player::Gote => println!("🎉 後手の勝利です！"),
         }
-    } else if game_mng.turn_count() >= 200 {
+    } else if game_mng.move_count() >= 200 {
         println!("200手を超えました。引き分けです。");
     } else if game_mng.is_draw() {
         println!("\n====================================");
@@ -197,10 +197,10 @@ fn play_vs_human(
 
     loop {
         println!("\n====================================");
-        println!("手数: {}手目", game_mng.turn_count() + 1);
+        println!("手数: {}手目", game_mng.move_count() + 1);
         print_board(game_mng.board());
 
-        let Some(turn) = game_mng.turn() else { break };
+        let Some(turn) = game_mng.side_to_move() else { break };
 
         let best_move = if turn == human_player {
             println!("\nあなたの番です。指し手を番号で選んでください:");
@@ -248,7 +248,7 @@ fn play_vs_human(
             Player::Sente => println!("🎉 先手の勝利です！"),
             Player::Gote => println!("🎉 後手の勝利です！"),
         }
-    } else if game_mng.turn_count() >= 200 {
+    } else if game_mng.move_count() >= 200 {
         println!("200手を超えました。引き分けです。");
     } else if game_mng.is_draw() {
         println!("\n====================================");
@@ -290,7 +290,7 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
                 features: game_mng.board().extract_all_features(),
             });
 
-            let best_move = if game_mng.turn_count() <= random_plies {
+            let best_move = if game_mng.move_count() <= random_plies {
                 let random_idx = rng.random_range(0..game_mng.moves().len());
                 game_mng.moves()[random_idx]
             } else {
@@ -319,7 +319,7 @@ fn generate_training_data(z_table: &ZobristTable, weights: &NnueWeights) {
             println!(
                 "ゲーム終了: {} ({}手) [{}/{}]",
                 result_str,
-                game_mng.turn_count(),
+                game_mng.move_count(),
                 current_completed,
                 num_games
             );
